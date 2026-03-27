@@ -19,7 +19,9 @@ console.log("==========================================\n");
 try {
   // Discovery logic placeholders (to be expanded in subsequent PRs/Phases)
   console.log("[*] Step 1: Discovering and Running Unit Tests...");
-  // TODO: Add framework execs like Jest, Mocha, or PyTest here
+  console.log(" -> [Frontend]: Running tests/frontend.test.js");
+  execSync(`node "${path.join(__dirname, 'frontend.test.js')}"`, { stdio: 'inherit' });
+  // TODO: Add framework execs like Jest, Mocha, or PyTest here for other modules
   // execSync('npm run test:unit', { stdio: 'inherit' });
 
   console.log("[*] Step 2: Running Cache Integration Tests...");

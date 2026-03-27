@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AI Route Planner - Multi-objective EV navigation engine">
+    <title>AI Route Planner</title>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <main>
+        <!-- Map Container -->
+        <div id="map"></div>
+
+        <!-- UI Overlay -->
+        <div id="ui-panel" class="glass-panel">
+            <h1>AI Route Planner</h1>
+            <p class="subtitle">Multi-Objective EV Navigation</p>
+
+            <form id="route-form">
+                <div class="input-group">
+                    <label for="start-input">Start Location</label>
+                    <input type="text" id="start-input" placeholder="Type address or click map..." autocomplete="off">
+                    <div id="start-suggestions" class="suggestions-dropdown hidden"></div>
+                </div>
+
+                <div class="input-group">
+                    <label for="end-input">End Location</label>
+                    <input type="text" id="end-input" placeholder="Type address or click map..." autocomplete="off">
+                    <div id="end-suggestions" class="suggestions-dropdown hidden"></div>
+                </div>
+
+                <div id="status-message" class="status-msg hidden"></div>
+
+                <button type="button" id="calc-route-btn" class="primary-btn" disabled>Calculate Route</button>
+                <button type="button" id="reset-btn" class="secondary-btn">Reset</button>
+            </form>
+        </div>
+    </main>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Custom Application Logic -->
+    <script src="app.js"></script>
+</body>
+
+</html>

@@ -1,25 +1,51 @@
 # Frontend Module Specification
 
-## 1. Overview
-The Frontend module orchestrates the User Interface containing interactive maps, multi-criteria sliders, and Pareto-optimal path selection visualizations. It serves as the primary gateway for user interactions with Phase 1 to Phase 3 algorithms.
+## 1. Requirements
 
-## 2. Technical Stack
-- Vanilla HTML, CSS, JavaScript
-- Map Rendering: **Leaflet.js + OSM raster tiles**
+### User Stories
+- **User Story 1:** As a user, I want to see a map interface so I can visualize my EV route.
+- **User Story 2:** As a user, I want to input my start and end locations to calculate a route.
 
-## 3. Architecture & Responsibilities
-- Render the mapping UI using lightweight Leaflet layers.
-- Provide accessible multi-criteria sliders (weighting time vs energy).
-- Visualize multiple Pareto-optimal paths via color-coded polyline overlays.
-- Handle API interactions with the Backend gateway via robust `try/catch` error checking. Ensure the UI never crashes during backend timeouts or complex algorithm delays.
+### Acceptance Criteria
+- The application renders a prominent geographic map using Leaflet.js.
+- The application attempts to detect the user's current geographic location on load to center the map (falling back to a default if unavailable).
+- The map allows standard tile viewing, zooming, and panning, with zoom controls placed in the bottom right corner to avoid UI overlap.
+- Users can switch between multiple map themes (Dark Theme, Light Theme, Satellite Theme).
+- The UI provides an autocomplete dropdown offering real-time location suggestions as the user types via the Nominatim API.
+- For Step 1 (Tracer Bullet), the frontend successfully captures these coordinates, sends them to the Backend API (when ready), and renders a returned mock route polyline.
 
-## 4. Current State
-- [ ] Initialization Pending
-- [ ] Map Rendering Boilerplate Pending
+## 2. Design
 
-## 5. Future Scope
-- Phase 3: Integration of the Agentic UI (LLM chatting capabilities nested within the map layout).
+### Architecture
+- **Tech Stack:** Vanilla HTML5, CSS3, and custom ES6 JavaScript. No heavy frontend frameworks (React/Vue).
+- **State Management:** Local JS variables in `app.js`.
 
-## 6. Testing Methods
-- Frontend unit testing using standard DOM query libraries.
-- Mock API injection for resilient error state testing.
+### Dependencies
+- **Leaflet.js:** Included via CDN for mapping, raster tile rendering, and polyline drawing.
+
+### Data Models
+- **Coordinate:**
+  ```typescript
+  { lat: number, lng: number }
+  ```
+- **RouteRequest:**
+  ```typescript
+  {
+      start: Coordinate,
+      end: Coordinate
+  }
+  ```
+- **RouteResponse:**
+  Expected GeoJSON LineString format from the Backend.
+
+### API Contracts
+- **Endpoint:** `POST /api/route` (Subject to backend definition)
+- **Role:** The frontend will `fetch()` this endpoint with the `RouteRequest` payload and parse the returned GeoJSON into a Leaflet polyline overlay. The call must be wrapped in `try/catch` per code-style rules to ensure the UI gracefully handles errors.
+
+## 3. Tasks (Step 1 Initialization)
+
+1. Scaffold `modules/frontend/` with `index.html`, `style.css`, and `app.js`.
+2. Setup base HTML document, import Leaflet.js CSS/JS, and style the map container.
+3. Instantiate the Leaflet map in `app.js` with OSM raster tiles.
+4. Implement UI mapping for Start/End point selection.
+5. Write the asynchronous `fetch` integration to send coordinates and plot the returned route on the map.
