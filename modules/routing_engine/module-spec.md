@@ -1,23 +1,41 @@
 # Routing Engine Module Specification
 
-## 1. Overview
-The core algorithmic microservice responsible for Level 4 EV Route Planning complexity. Calculates multi-objective Pareto optimal routing solutions prioritizing Time, Energy, and State of Charge (SOC) via real world topological data.
+## 1. Requirements
 
-## 2. Technical Stack
-- Fast Python API wrappers
-- C++ (A* / MDA algorithms via pybind11)
-- gRPC Interconnectivity Protocol
+### User Stories
+- As a backend orchestrator, I need a high-performance routing module to compute optimal paths based on complex constraints.
+- As a developer, I need clear visibility into the data flow across the Python/C++ boundary.
 
-## 3. Architecture & Responsibilities
-- `data-ingestion`: Background NodeJS thread or caching script generating location-independent bounded-box OSM topologies.
-- `graph-engine`: Physics-based edge cost computation.
-- `routing_layer1`: Executes fast C++ optimization sweeps traversing large state spaces.
-- `ev_models`: Inject piece-wise charging characteristics and aerodynamic resistance formulas.
+### Acceptance Criteria (Step 1: Tracer Bullet Complete)
+- **Status**: ✅ VERIFIED
+- Hybrid architecture implemented: Python gRPC server + C++ `pybind11` core.
+- `CalculatedRoute` gRPC method successfully bridges to the C++ engine.
+- Every function call across the boundary is logged with `[DEBUG]` prefixes.
+- C++ core validates mathematical inputs and returns hardcoded polyline data for validation.
+- Automated `pytest` suite confirms gRPC and C++ integration.
 
-## 4. Current State
-- [ ] Mathematical definitions pending
-- [ ] pybind11 integration pending
+## 2. Design
 
-## 5. Testing Methods
-- Mathematical correctness proofs.
-- Dense graph traverse benchmarking.
+### Architecture & Tech Stack
+- **Languages**: Python 3.x, C++ 17.
+- **Bridge**: `pybind11`.
+- **API**: gRPC / Protobuf.
+- **Build**: `setuptools` driven C++ extension compilation (`route_core.so`).
+
+### Directory Structure
+- `server.py`: gRPC service implementation and Python entry point.
+- `core/engine.cpp`: High-performance C++ calculation logic.
+- `proto/`: Protobuf definitions and generated code.
+- `setup.py`: Build configuration for the C++ extension.
+
+### API Contract (`route_engine.proto`)
+```proto
+service RouteService {
+    rpc CalculateRoute (RouteRequest) returns (RouteResponse) {}
+}
+```
+
+## 3. Verification
+- **Automated Tests**: `pytest` in `tests/routing_engine/test_server.py`.
+- **Manual Verification**: Launch `python server.py` and verify "Listening on port 50051".
+

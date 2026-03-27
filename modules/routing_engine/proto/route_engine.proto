@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package route_engine;
+
+message Coordinate {
+    double lat = 1;
+    double lng = 2;
+}
+
+message RouteRequest {
+    Coordinate start = 1;
+    Coordinate end = 2;
+}
+
+message RouteResponse {
+    repeated Coordinate polyline = 1;
+    double distance = 2; // meters
+    double duration = 3; // seconds
+}
+
+service RouteService {
+    rpc CalculateRoute (RouteRequest) returns (RouteResponse) {}
+}

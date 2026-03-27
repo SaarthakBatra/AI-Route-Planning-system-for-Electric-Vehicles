@@ -1,8 +1,9 @@
 const errorResponse = require('../utils/errorResponse');
 const logger = require('../utils/logger');
+const { calculateRouteGrpc } = require('../services/grpcClient');
 
 /**
- * Validates the start and end coordinates, and responds with test data.
+ * Validates the start and end coordinates, and responds with the route.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  */
@@ -21,17 +22,16 @@ const calculateRouteController = async (req, res) => {
 
         logger.info(`Calculating route from (${start.lat}, ${start.lng}) to (${end.lat}, ${end.lng})`);
 
-        // Dummy data for Step 1 pipeline verification.
-        const dummyPath = [
-            { lat: start.lat, lng: start.lng },
-            { lat: (start.lat + end.lat) / 2, lng: ((start.lng + end.lng) / 2) + 0.1 },
-            { lat: end.lat, lng: end.lng }
-        ];
+        // Fetch precise route polyline from the Python gRPC Engine
+        const grpcResponse = await calculateRouteGrpc(start, end);
+
+        // Ensure polyline property exists as per RouteResponse contract
+        const path = grpcResponse.polyline || [];
 
         return res.status(200).json({
             success: true,
             data: {
-                path: dummyPath
+                path: path
             }
         });
     } catch (error) {

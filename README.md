@@ -1,4 +1,27 @@
-# AI Navigation Agent - EV Route Planner
+# AI Route Planner
+
+An industrial-grade, multi-objective EV route planning system utilizing a high-performance C++/Python routing engine, Node.js orchestration, and a modern Leaflet-based frontend.
+
+## 🚀 Status: Stage 1 Complete ✅
+The "Tracer Bullet" phase is finished. The end-to-end pipeline from the browser through the API gateway to the C++/Python core is validated and verified.
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    A[Frontend: Leaflet] -- REST --> B[Backend: Express]
+    B -- gRPC --> C[Routing Engine: Python/C++]
+    B -- ioredis --> D[Cache: Redis]
+    B -- Mongoose --> E[Database: MongoDB Atlas]
+```
+
+## 📂 Project Structure
+- `modules/backend`: Node.js API Gateway and service orchestrator.
+- `modules/routing_engine`: Python/C++ core with gRPC interface.
+- `modules/cache`: Redis-based caching layer.
+- `modules/database`: MongoDB Atlas persistence layer.
+- `modules/frontend`: Vanilla HTML/JS mapping interface.
+- `tests/`: Centralized test suite for all modules.
 
 **Core Objective:**
 To build an industrial-grade, robust, full-stack, location-independent multi-objective Electric Vehicle (EV) Route Planning system (Level 4 Complexity). It performs constrained multi-objective optimization (minimizing travel time and energy consumption while ensuring battery State of Charge constraints) using real road networks to find Pareto-optimal routes. Designed to handle simultaneous multi-user requests in real-time using parallel computing and eventually integrate ML enhancements and an LLM-powered navigation agent.

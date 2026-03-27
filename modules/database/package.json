@@ -1,19 +1,18 @@
 {
-  "name": "backend",
+  "name": "database",
   "version": "1.0.0",
-  "description": "Welcome to the internal Backend module directory.",
+  "description": "MongoDB/Mongoose database module for the AI Route Planner. Handles connection health and data persistence.",
   "main": "index.js",
   "directories": {
-    "test": "../../tests/backend"
+    "test": "../../tests/database"
   },
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
     "test": "jest"
   },
   "jest": {
     "roots": [
-      "<rootDir>/../../tests/backend"
+      "<rootDir>/../../tests/database"
     ],
     "moduleDirectories": [
       "node_modules",
@@ -25,15 +24,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@grpc/grpc-js": "^1.14.3",
-    "@grpc/proto-loader": "^0.8.0",
-    "cors": "^2.8.6",
     "dotenv": "^16.4.5",
-    "express": "^5.2.1"
+    "mongoose": "^8.9.5"
   },
   "devDependencies": {
-    "jest": "^30.3.0",
-    "nodemon": "^3.1.0",
-    "supertest": "^7.2.2"
+    "jest": "^30.3.0"
   }
 }

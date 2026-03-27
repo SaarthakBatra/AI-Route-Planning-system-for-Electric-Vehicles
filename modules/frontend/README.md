@@ -1,13 +1,35 @@
 # Frontend Module
 
-Welcome to the internal Frontend module directory.
+The Frontend module provides an intuitive, interactive map-based interface for the AI Route Planner. Built with vanilla technologies and Leaflet.js, it offers a high-performance, lightweight user experience.
 
-## Purpose
-This module houses the Vanilla HTML/CSS/JS mapping UI and its dynamic Javascript logic. We utilize Leaflet.js with OSM raster tiles to deliver a snappy, lightweight rendering experience decoupled from heavy third-party vendor lock-in.
+## 🚀 Quick Start
 
-## Design Rules
-1. Never bypass the API Gateway to interact directly with the Python routing core or Database.
-2. Adhere to strict JSDoc/TypeScript-like documentation.
-3. Fail gracefully. If the backend fails to parse a route, visually alert the user instead of unhandled promise rejections.
+1. Open `index.html` in your browser.
+2. Ensure the Backend module is running on `http://localhost:3000`.
+
+## 🏗️ Features
+
+- **Dynamic Mapping**: Interactive Leaflet interface with multiple themes.
+- **Smart Search**: Autocomplete suggestions via Nominatim as you type.
+- **Visual Feedback**: Real-time rendering of route polylines and markers.
+- **Geolocation**: Precision map centering based on browser location.
+- **Modern UI**: Glassmorphic control panels for a premium feel.
+
+## 🏗️ Architecture
+
+- **State**: Centralized in `app.js` managing coordinates and markers.
+- **Events**: Heavy reliance on event delegation for map clicks and input handling.
+- **Styles**: Custom CSS variables for theme management and responsive layout.
+
+## 🛠️ Tech Stack
+- **HTML5 / CSS3**: Structural and visual layers.
+- **JavaScript (ES6+)**: Logic and API orchestration.
+- **Leaflet.js**: Mapping and geometry engine.
+
+## 🧪 Testing
+Run utility tests from the project root:
+```bash
+node tests/frontend.test.js
+```
 
 *Refer to `module-spec.md` for full implementation boundaries.*
