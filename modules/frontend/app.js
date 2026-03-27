@@ -5,7 +5,17 @@
 
 // Config constants for easy editing
 const appConfig = {
-    debounceTimeMs: 800 // The time to wait before querying Nominatim after user stops typing
+    debounceTimeMs: 800, // The time to wait before querying Nominatim after user stops typing
+    DEBUG: true // Universal constant for detailed logging
+};
+
+/**
+ * Universal logging utility
+ */
+const logDebug = (funcName, action, data) => {
+    if (appConfig.DEBUG) {
+        console.log(`[DEBUG] [${funcName}] ${action}`, data !== undefined ? data : '');
+    }
 };
 
 // Application State
@@ -48,19 +58,30 @@ const ui = {
  * @param {Object} coords - Leaflet coordinates object
  * @returns {Object} JSON strict coordinates
  */
-const formatCoord = (coords) => ({ lat: coords.lat, lng: coords.lng });
+const formatCoord = (coords) => {
+    logDebug('formatCoord', 'ENTRY', { coords });
+    const result = { lat: coords.lat, lng: coords.lng };
+    logDebug('formatCoord', 'EXIT', result);
+    return result;
+};
 
 /**
  * Formats a coordinate to a display string
  * @param {Object} coord - {lat, lng}
  * @returns {string} lat,lng truncated
  */
-const displayCoord = (coord) => `${coord.lat.toFixed(5)}, ${coord.lng.toFixed(5)}`;
+const displayCoord = (coord) => {
+    logDebug('displayCoord', 'ENTRY', { coord });
+    const result = `${coord.lat.toFixed(5)}, ${coord.lng.toFixed(5)}`;
+    logDebug('displayCoord', 'EXIT', result);
+    return result;
+};
 
 /**
  * Initializes the Leaflet map and event handlers.
  */
 function initMap() {
+    logDebug('initMap', 'ENTRY');
     try {
         const map = L.map('map', { zoomControl: false }).setView(mapConfig.initialCenter, mapConfig.initialZoom);
 
@@ -93,12 +114,17 @@ function initMap() {
 
         // Geolocation
         if (navigator.geolocation) {
+            logDebug('initMap', 'GEOLOCATION_REQUEST');
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
                     const userCoords = [pos.coords.latitude, pos.coords.longitude];
+                    logDebug('initMap', 'GEOLOCATION_SUCCESS', { userCoords });
                     map.setView(userCoords, 13);
                 },
-                (err) => console.warn("[app] Geolocation skipped or denied.")
+                (err) => {
+                    logDebug('initMap', 'GEOLOCATION_ERROR_OR_DENIED', { error: err.message || err });
+                    console.warn("[app] Geolocation skipped or denied.");
+                }
             );
         }
 
@@ -114,7 +140,9 @@ function initMap() {
         setupAutocompleteInput(map, 'end');
 
         console.log("[app] Map initialized successfully.");
+        logDebug('initMap', 'EXIT_SUCCESS');
     } catch (err) {
+        logDebug('initMap', 'ERROR', { message: err.message, stack: err.stack });
         console.error("[app] Map initialization failed:", err);
         showStatus('Critical error: Could not load the map interface.', 'error');
     }
@@ -126,6 +154,8 @@ function initMap() {
  * @param {Object} latlng - Click coordinates
  */
 function handleMapClick(map, latlng) {
+    logDebug('handleMapClick', 'ENTRY', { latlng, currentMode: state.selectionMode });
+
     if (state.selectionMode === 'start') {
         state.startCoords = latlng;
         ui.startInput.value = displayCoord(latlng);
@@ -145,6 +175,8 @@ function handleMapClick(map, latlng) {
         state.selectionMode = 'end';
         ui.startInput.classList.remove('active');
         ui.endInput.classList.add('active');
+        
+        logDebug('handleMapClick', 'EXIT_START_SET', { startCoords: state.startCoords, newMode: state.selectionMode });
 
     } else if (state.selectionMode === 'end') {
         state.endCoords = latlng;
@@ -165,6 +197,10 @@ function handleMapClick(map, latlng) {
         state.selectionMode = 'done';
         ui.endInput.classList.remove('active');
         ui.calcBtn.disabled = false; // Enable calculation
+
+        logDebug('handleMapClick', 'EXIT_END_SET', { endCoords: state.endCoords, newMode: state.selectionMode });
+    } else {
+        logDebug('handleMapClick', 'EXIT_NO_ACTION', { currentMode: state.selectionMode });
     }
 }
 
@@ -174,15 +210,22 @@ function handleMapClick(map, latlng) {
  * @param {string} target 'start' or 'end'
  */
 function setupAutocompleteInput(map, target) {
+    logDebug('setupAutocompleteInput', 'ENTRY', { target });
+    
     const inputEl = target === 'start' ? ui.startInput : ui.endInput;
     const dropdownEl = target === 'start' ? ui.startSuggestions : ui.endSuggestions;
 
     inputEl.addEventListener('input', (e) => {
         const query = e.target.value;
+        logDebug('setupAutocompleteInput_InputListener', 'INPUT_RECEIVED', { target, query });
+
         if (!query.trim() || query.length < 3) {
             dropdownEl.classList.add('hidden');
             dropdownEl.innerHTML = '';
-            if (state.debounceTimers[target]) clearTimeout(state.debounceTimers[target]);
+            if (state.debounceTimers[target]) {
+                clearTimeout(state.debounceTimers[target]);
+                logDebug('setupAutocompleteInput_InputListener', 'TIMER_CLEARED');
+            }
             return;
         }
 
@@ -193,8 +236,10 @@ function setupAutocompleteInput(map, target) {
         }
 
         if (lastChar === ' ') {
+            logDebug('setupAutocompleteInput_InputListener', 'TRIGGER_FETCH_IMMEDIATE', { query: query.trim() });
             fetchSuggestions(map, query.trim(), target, dropdownEl);
         } else {
+            logDebug('setupAutocompleteInput_InputListener', 'TRIGGER_FETCH_DEBOUNCED', { target, delayMs: appConfig.debounceTimeMs });
             state.debounceTimers[target] = setTimeout(() => {
                 fetchSuggestions(map, query.trim(), target, dropdownEl);
             }, appConfig.debounceTimeMs);
@@ -203,6 +248,7 @@ function setupAutocompleteInput(map, target) {
 
     inputEl.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
+            logDebug('setupAutocompleteInput_KeydownListener', 'ENTER_PRESSED', { target, value: inputEl.value });
             e.preventDefault();
             if (state.debounceTimers[target]) clearTimeout(state.debounceTimers[target]);
             dropdownEl.classList.add('hidden');
@@ -215,17 +261,29 @@ function setupAutocompleteInput(map, target) {
             dropdownEl.classList.add('hidden');
         }
     });
+
+    logDebug('setupAutocompleteInput', 'EXIT_SUCCESS', { target });
 }
 
 /**
  * Executes a geographic text search for dropdown suggestions.
  */
 async function fetchSuggestions(map, query, target, dropdownEl) {
-    if (!query) return;
+    logDebug('fetchSuggestions', 'ENTRY', { query, target });
+    if (!query) {
+        logDebug('fetchSuggestions', 'EXIT_NO_QUERY');
+        return;
+    }
     try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`);
-        const data = await response.json();
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
+        logDebug('fetchSuggestions', 'API_REQUEST', { url });
         
+        const response = await fetch(url);
+        logDebug('fetchSuggestions', 'API_RESPONSE', { status: response.status });
+        
+        const data = await response.json();
+        logDebug('fetchSuggestions', 'API_DATA', { resultCount: data ? data.length : 0 });
+
         dropdownEl.innerHTML = '';
         if (data && data.length > 0) {
             dropdownEl.classList.remove('hidden');
@@ -234,6 +292,8 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
                 div.className = 'suggestion-item';
                 div.innerText = item.display_name;
                 div.addEventListener('click', () => {
+                    logDebug('fetchSuggestions_SuggestionClick', 'ENTRY', { display_name: item.display_name, lat: item.lat, lon: item.lon });
+                    
                     const latlng = { lat: parseFloat(item.lat), lng: parseFloat(item.lon) };
                     const shortName = item.display_name.split(',')[0] + ", " + (item.display_name.split(',').pop().trim());
                     
@@ -242,13 +302,17 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
                     dropdownEl.classList.add('hidden');
                     
                     plotMarker(map, latlng, target, shortName);
+                    logDebug('fetchSuggestions_SuggestionClick', 'EXIT_SUCCESS');
                 });
                 dropdownEl.appendChild(div);
             });
+            logDebug('fetchSuggestions', 'EXIT_SUGGESTIONS_RENDERED');
         } else {
             dropdownEl.classList.add('hidden');
+            logDebug('fetchSuggestions', 'EXIT_NO_RESULTS');
         }
     } catch (err) {
+        logDebug('fetchSuggestions', 'ERROR', { message: err.message, stack: err.stack });
         console.error("[app] Autocomplete error:", err);
     }
 }
@@ -257,6 +321,7 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
  * Universal marker plotter.
  */
 function plotMarker(map, latlng, target, shortName) {
+    logDebug('plotMarker', 'ENTRY', { latlng, target, shortName });
     if (target === 'start') {
         state.startCoords = latlng;
         if (state.markers.start) map.removeLayer(state.markers.start);
@@ -279,6 +344,7 @@ function plotMarker(map, latlng, target, shortName) {
         if (shortName) ui.endInput.value = shortName;
     }
     map.setView(latlng, 13);
+    logDebug('plotMarker', 'EXIT_SUCCESS', { selectionMode: state.selectionMode });
 }
 
 /**
@@ -288,12 +354,22 @@ function plotMarker(map, latlng, target, shortName) {
  * @param {string} target 'start' or 'end'
  */
 async function handleGeocode(map, query, target) {
-    if (!query.trim()) return;
+    logDebug('handleGeocode', 'ENTRY', { query, target });
+    if (!query.trim()) {
+        logDebug('handleGeocode', 'EXIT_NO_QUERY');
+        return;
+    }
     
     showStatus(`Searching for ${query}...`, 'loading');
     try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`);
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+        logDebug('handleGeocode', 'API_REQUEST', { url });
+
+        const response = await fetch(url);
+        logDebug('handleGeocode', 'API_RESPONSE', { status: response.status });
+
         const data = await response.json();
+        logDebug('handleGeocode', 'API_DATA', { resultCount: data ? data.length : 0 });
         
         if (!data || data.length === 0) throw new Error("Location not found");
         
@@ -305,7 +381,9 @@ async function handleGeocode(map, query, target) {
         showStatus('Location found', 'success');
         setTimeout(() => showStatus('', 'hidden'), 2500);
         
+        logDebug('handleGeocode', 'EXIT_SUCCESS');
     } catch (err) {
+        logDebug('handleGeocode', 'ERROR', { message: err.message, stack: err.stack });
         showStatus(`Geocoding error: ${err.message}`, 'error');
     }
 }
@@ -316,7 +394,11 @@ async function handleGeocode(map, query, target) {
  * @param {Object} map - Leaflet Map instance
  */
 async function calculateRoute(map) {
-    if (!state.startCoords || !state.endCoords) return;
+    logDebug('calculateRoute', 'ENTRY');
+    if (!state.startCoords || !state.endCoords) {
+        logDebug('calculateRoute', 'EXIT_MISSING_COORDS', { start: !!state.startCoords, end: !!state.endCoords });
+        return;
+    }
 
     ui.calcBtn.disabled = true;
     showStatus('Calculating route...', 'loading');
@@ -327,74 +409,80 @@ async function calculateRoute(map) {
     };
 
     try {
-        // Step 1: Tracer bullet calls internal express backend (assumed to be on /api/route)
-        // Note: For actual network call, backend must exist. Overriding logic locally if no server.
-        let outGeoJson = null;
+        const fetchUrl = 'http://localhost:3000/api/routes/calculate';
+        logDebug('calculateRoute', 'API_REQUEST', { method: 'POST', url: fetchUrl, payload });
+        
+        const response = await fetch(fetchUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        
+        logDebug('calculateRoute', 'API_RESPONSE_STATUS', { status: response.status, ok: response.ok });
 
-        try {
-            const response = await fetch('/api/route', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
+        if (!response.ok) {
+            let errorMsg = `HTTP Error ${response.status}`;
+            try {
                 const errData = await response.json();
-                throw new Error(errData.message || 'Server responded with an error');
+                logDebug('calculateRoute', 'API_ERROR_DATA', errData);
+                errorMsg = errData.message || errData.error || errorMsg;
+            } catch (e) {
+                // Not JSON, just use generic HTTP status error
+                logDebug('calculateRoute', 'API_ERROR_PARSE_FAIL', { message: e.message });
             }
-            outGeoJson = await response.json();
-        } catch (fetchErr) {
-            console.warn("[app] Backend unavailable, injecting mock Tracer Bullet response.", fetchErr.message);
-            // Mock Fallback GeoJSON for Step 1 Validation if backend is down
-            outGeoJson = {
-                type: "FeatureCollection",
-                features: [{
-                    type: "Feature",
-                    geometry: {
-                        type: "LineString",
-                        coordinates: [
-                            [state.startCoords.lng, state.startCoords.lat],
-                            // Add a bogus midpoint to verify polyline rendering
-                            [(state.startCoords.lng + state.endCoords.lng) / 2, (state.startCoords.lat + state.endCoords.lat) / 2 + 0.01],
-                            [state.endCoords.lng, state.endCoords.lat]
-                        ]
-                    },
-                    properties: { distance: "Mocked", time: "Mocked" }
-                }]
-            };
+            throw new Error(errorMsg);
         }
 
-        renderRoute(map, outGeoJson);
+        const data = await response.json();
+        logDebug('calculateRoute', 'API_RESPONSE_DATA', data);
+        
+        if (!data.success || !data.data || !data.data.path) {
+            throw new Error('Invalid response format from server');
+        }
+
+        renderRoute(map, data.data.path);
         showStatus('Route retrieved successfully.', 'success');
+        logDebug('calculateRoute', 'EXIT_SUCCESS');
 
     } catch (error) {
+        logDebug('calculateRoute', 'ERROR', { message: error.message, stack: error.stack });
         console.error("[app] Route calculation failed:", error);
         showStatus(`Error: ${error.message}`, 'error');
     } finally {
         ui.calcBtn.disabled = false;
+        logDebug('calculateRoute', 'FINALLY_CALCBTN_UNLOCKED');
     }
 }
 
 /**
- * Connects the GeoJSON line string to the map via Leaflet.
+ * Connects the array of coordinates to the map via Leaflet Polyline.
  * @param {Object} map - Leaflet Map instance
- * @param {Object} geojsonData - Valid GeoJSON LineString
+ * @param {Array} pathCoords - Array of {lat, lng} coordinate objects
  */
-function renderRoute(map, geojsonData) {
+function renderRoute(map, pathCoords) {
+    logDebug('renderRoute', 'ENTRY', { pathCoordsLength: pathCoords.length });
+    
     if (state.routeLayer) {
         map.removeLayer(state.routeLayer);
+        logDebug('renderRoute', 'REMOVED_EXISTING_LAYER');
     }
 
-    state.routeLayer = L.geoJSON(geojsonData, {
-        style: {
-            color: '#2196F3',
-            weight: 5,
-            opacity: 0.8
-        }
+    // Convert {lat, lng} objects to [lat, lng] arrays for Leaflet
+    const latLngPairs = pathCoords.map(coord => [coord.lat, coord.lng]);
+
+    state.routeLayer = L.polyline(latLngPairs, {
+        color: '#2196F3',
+        weight: 5,
+        opacity: 0.8
     }).addTo(map);
 
-    // Zoom to fit bounds
-    map.fitBounds(state.routeLayer.getBounds(), { padding: [50, 50] });
+    // Zoom to fit bounds if there are points
+    if (latLngPairs.length > 0) {
+        map.fitBounds(state.routeLayer.getBounds(), { padding: [50, 50] });
+        logDebug('renderRoute', 'FITTED_BOUNDS');
+    }
+    
+    logDebug('renderRoute', 'EXIT_SUCCESS');
 }
 
 /**
@@ -402,6 +490,8 @@ function renderRoute(map, geojsonData) {
  * @param {Object} map - Leaflet Map instance
  */
 function resetState(map) {
+    logDebug('resetState', 'ENTRY');
+    
     if (state.markers.start) map.removeLayer(state.markers.start);
     if (state.markers.end) map.removeLayer(state.markers.end);
     if (state.routeLayer) map.removeLayer(state.routeLayer);
@@ -417,6 +507,8 @@ function resetState(map) {
     ui.endInput.value = '';
     ui.calcBtn.disabled = true;
     showStatus('', 'hidden');
+    
+    logDebug('resetState', 'EXIT_SUCCESS');
 }
 
 /**
@@ -425,6 +517,7 @@ function resetState(map) {
  * @param {string} type - 'error', 'success', 'loading', 'hidden'
  */
 function showStatus(msg, type) {
+    logDebug('showStatus', 'ENTRY', { msg, type });
     ui.statusMsg.className = 'status-msg'; // Reset
     if (type !== 'hidden') {
         ui.statusMsg.classList.add(type);
@@ -433,10 +526,15 @@ function showStatus(msg, type) {
         ui.statusMsg.classList.add('hidden');
         ui.statusMsg.innerText = '';
     }
+    logDebug('showStatus', 'EXIT_SUCCESS');
 }
 
 // Map entry point
-document.addEventListener('DOMContentLoaded', initMap);
+document.addEventListener('DOMContentLoaded', () => {
+    logDebug('DOMContentLoaded', 'ENTRY');
+    initMap();
+    logDebug('DOMContentLoaded', 'EXIT');
+});
 
 // Export for testing if needed
 if (typeof module !== 'undefined' && module.exports) {

@@ -36,11 +36,14 @@
   }
   ```
 - **RouteResponse:**
-  Expected GeoJSON LineString format from the Backend.
+  Expected JSON containing a polyline array of coordinates from the Backend:
+  ```typescript
+  { success: boolean, data: { path: Array<{lat: number, lng: number}> } }
+  ```
 
 ### API Contracts
-- **Endpoint:** `POST /api/route` (Subject to backend definition)
-- **Role:** The frontend will `fetch()` this endpoint with the `RouteRequest` payload and parse the returned GeoJSON into a Leaflet polyline overlay. The call must be wrapped in `try/catch` per code-style rules to ensure the UI gracefully handles errors.
+- **Endpoint:** `POST http://localhost:3000/api/routes/calculate`
+- **Role:** The frontend will `fetch()` this endpoint with the `RouteRequest` payload and parse the returned `path` array into a Leaflet polyline overlay (`L.polyline`). The call must be wrapped in `try/catch` per code-style rules to ensure the UI gracefully handles 400/500 errors.
 
 ## 3. Tasks (Step 1 Initialization)
 

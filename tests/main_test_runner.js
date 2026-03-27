@@ -21,12 +21,14 @@ try {
   console.log("[*] Step 1: Discovering and Running Unit Tests...");
   console.log(" -> [Frontend]: Running tests/frontend.test.js");
   execSync(`node "${path.join(__dirname, 'frontend.test.js')}"`, { stdio: 'inherit' });
-  // TODO: Add framework execs like Jest, Mocha, or PyTest here for other modules
-  // execSync('npm run test:unit', { stdio: 'inherit' });
+  
+  console.log("[*] Step 2: Running Backend API Tests...");
+  execSync('npm test', { 
+      cwd: path.join(__dirname, '../modules/backend'), 
+      stdio: 'inherit' 
+  });
 
-  console.log("[*] Step 2: Running Cache Integration Tests...");
-  // TODO: Add Redis test suite execution
-  // execSync('npm run test:cache', { stdio: 'inherit' });
+  console.log("[*] Step 3: Running Cache Integration Tests...");
   
   console.log("[*] Step 3: Running High-Concurrency Load Tests...");
   // TODO: Add K6/Artillery invocation script
