@@ -50,7 +50,10 @@ const ui = {
     resetBtn: document.getElementById('reset-btn'),
     statusMsg: document.getElementById('status-message'),
     startSuggestions: document.getElementById('start-suggestions'),
-    endSuggestions: document.getElementById('end-suggestions')
+    endSuggestions: document.getElementById('end-suggestions'),
+    routeInfo: document.getElementById('route-info'),
+    routeDistance: document.getElementById('route-distance'),
+    routeDuration: document.getElementById('route-duration')
 };
 
 /**
@@ -75,6 +78,33 @@ const displayCoord = (coord) => {
     const result = `${coord.lat.toFixed(5)}, ${coord.lng.toFixed(5)}`;
     logDebug('displayCoord', 'EXIT', result);
     return result;
+};
+
+/**
+ * Formats distance in meters to a human-readable string.
+ * @param {number} meters 
+ * @returns {string}
+ */
+const formatDistance = (meters) => {
+    if (meters >= 1000) {
+        return (meters / 1000).toFixed(1) + ' km';
+    }
+    return Math.round(meters) + ' m';
+};
+
+/**
+ * Formats duration in seconds to a human-readable string.
+ * @param {number} seconds 
+ * @returns {string}
+ */
+const formatDuration = (seconds) => {
+    if (seconds < 60) return Math.round(seconds) + ' secs';
+    const mins = Math.floor(seconds / 60);
+    const hours = Math.floor(mins / 60);
+    if (hours > 0) {
+        return `${hours} hr ${mins % 60} min`;
+    }
+    return `${mins} mins`;
 };
 
 /**
@@ -410,6 +440,9 @@ async function calculateRoute(map) {
 
     try {
         const fetchUrl = 'http://localhost:3000/api/routes/calculate';
+        
+        // PROJECT REQUIREMENT: Detailed logging for coordinates sent
+        console.log("[app] Sending coordinates to API:", JSON.stringify(payload, null, 2));
         logDebug('calculateRoute', 'API_REQUEST', { method: 'POST', url: fetchUrl, payload });
         
         const response = await fetch(fetchUrl, {
@@ -420,27 +453,35 @@ async function calculateRoute(map) {
         
         logDebug('calculateRoute', 'API_RESPONSE_STATUS', { status: response.status, ok: response.ok });
 
+        const data = await response.json();
+        
+        // PROJECT REQUIREMENT: Detailed logging for full response
+        console.log("[app] Received full response from API:", JSON.stringify(data, null, 2));
+        logDebug('calculateRoute', 'API_RESPONSE_DATA', data);
+
         if (!response.ok) {
             let errorMsg = `HTTP Error ${response.status}`;
-            try {
-                const errData = await response.json();
-                logDebug('calculateRoute', 'API_ERROR_DATA', errData);
-                errorMsg = errData.message || errData.error || errorMsg;
-            } catch (e) {
-                // Not JSON, just use generic HTTP status error
-                logDebug('calculateRoute', 'API_ERROR_PARSE_FAIL', { message: e.message });
-            }
+            errorMsg = data.message || data.error || errorMsg;
             throw new Error(errorMsg);
         }
 
-        const data = await response.json();
-        logDebug('calculateRoute', 'API_RESPONSE_DATA', data);
-        
-        if (!data.success || !data.data || !data.data.path) {
-            throw new Error('Invalid response format from server');
+        // Standardized Response Handling (Step 2)
+        if (!data.success || !data.data || !data.data.routes || !data.data.routes[0]) {
+            throw new Error('Invalid response format: data.data.routes[0] missing');
         }
 
-        renderRoute(map, data.data.path);
+        const route = data.data.routes[0];
+        if (!route.path) {
+            throw new Error('Invalid response format: path missing in route');
+        }
+
+        renderRoute(map, route.path);
+        
+        // Update UI with distance and duration
+        ui.routeDistance.innerText = formatDistance(route.distance || 0);
+        ui.routeDuration.innerText = formatDuration(route.duration || 0);
+        ui.routeInfo.classList.remove('hidden');
+
         showStatus('Route retrieved successfully.', 'success');
         logDebug('calculateRoute', 'EXIT_SUCCESS');
 
@@ -448,6 +489,7 @@ async function calculateRoute(map) {
         logDebug('calculateRoute', 'ERROR', { message: error.message, stack: error.stack });
         console.error("[app] Route calculation failed:", error);
         showStatus(`Error: ${error.message}`, 'error');
+        ui.routeInfo.classList.add('hidden');
     } finally {
         ui.calcBtn.disabled = false;
         logDebug('calculateRoute', 'FINALLY_CALCBTN_UNLOCKED');
@@ -506,6 +548,9 @@ function resetState(map) {
     ui.startInput.value = '';
     ui.endInput.value = '';
     ui.calcBtn.disabled = true;
+    ui.routeInfo.classList.add('hidden');
+    ui.routeDistance.innerText = '-';
+    ui.routeDuration.innerText = '-';
     showStatus('', 'hidden');
     
     logDebug('resetState', 'EXIT_SUCCESS');
@@ -538,5 +583,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Export for testing if needed
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { formatCoord, displayCoord };
+    module.exports = { formatCoord, displayCoord, formatDistance, formatDuration };
 }

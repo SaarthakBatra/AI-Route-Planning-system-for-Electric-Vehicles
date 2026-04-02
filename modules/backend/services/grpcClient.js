@@ -29,11 +29,32 @@ const calculateRouteGrpc = (start, end) => {
     return new Promise((resolve, reject) => {
         const routeRequest = { start, end };
         
-        client.CalculateRoute(routeRequest, (error, response) => {
+        // Step 2 Requirement: Trigger the real Dijkstra engine via metadata
+        const metadata = new grpc.Metadata();
+        metadata.add('use-real-algo', 'true');
+
+        logger.debug('Initiating gRPC CalculateRoute call', { 
+            target, 
+            request: routeRequest,
+            metadata: metadata.getMap() 
+        });
+
+        const startTime = Date.now();
+        
+        client.CalculateRoute(routeRequest, metadata, (error, response) => {
+            const duration = Date.now() - startTime;
+            
             if (error) {
-                logger.error(`gRPC CalculateRoute failed: ${error.message}`);
+                logger.error(`gRPC CalculateRoute failed after ${duration}ms: ${error.message}`);
                 return reject(error);
             }
+
+            logger.debug(`gRPC CalculateRoute succeeded in ${duration}ms`, {
+                polylineSize: response.polyline ? response.polyline.length : 0,
+                distance: response.distance,
+                duration: response.duration
+            });
+
             resolve(response);
         });
     });

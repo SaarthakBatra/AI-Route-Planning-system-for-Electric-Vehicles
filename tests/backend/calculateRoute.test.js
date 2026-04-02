@@ -52,11 +52,14 @@ describe('POST /api/routes/calculate', () => {
             
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
-        expect(response.body.data.path).toHaveLength(3);
+        expect(response.body.data.routes).toHaveLength(1);
         
-        const path = response.body.data.path;
-        expect(path[0].lat).toBe(40.7128);
-        expect(path[2].lat).toBe(40.7306);
+        const route = response.body.data.routes[0];
+        expect(route.path).toHaveLength(3);
+        expect(route.path[0].lat).toBe(40.7128);
+        expect(route.distance).toBe(1000);
+        expect(route.duration).toBe(300);
+
         expect(calculateRouteGrpc).toHaveBeenCalledWith(
             { lat: 40.7128, lng: -74.0060 },
             { lat: 40.7306, lng: -73.9866 }

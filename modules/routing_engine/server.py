@@ -34,33 +34,65 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
         start = request.start
         end = request.end
         
-        logging.info(f"[DEBUG] RouteService.CalculateRoute | Input: start=({start.lat}, {start.lng}), end=({end.lat}, {end.lng})")
+        # Determine algorithm mode using a priority chain:
+        # Priority 1: gRPC request metadata 'use-real-algo' (set by tests — process-independent)
+        # Priority 2: USE_REAL_ALGO environment variable (set when launching server manually)
+        # Priority 3: Default false (Stage 1 DUMMY_TRACER)
+        request_metadata = dict(context.invocation_metadata())
+        use_real_algo_meta = request_metadata.get('use-real-algo', '').lower() == 'true'
+        use_real_algo_env  = os.getenv('USE_REAL_ALGO', 'false').lower() == 'true'
+        use_real_algo = use_real_algo_meta or use_real_algo_env
+
+        algo_mode   = "REAL_DIJKSTRA" if use_real_algo else "DUMMY_TRACER"
+        algo_source = "metadata" if use_real_algo_meta else ("env" if use_real_algo_env else "default")
+
+        logging.info(f"[DEBUG] RouteService.CalculateRoute | Mode: {algo_mode} (source: {algo_source}) | Input: start=({start.lat}, {start.lng}), end=({end.lat}, {end.lng})")
         
         try:
-            # Delegate raw mathematical processing to C++ engine
-            cpp_response = route_core.calculate_dummy_route(
-                start.lat, start.lng, end.lat, end.lng
-            )
-            
-            # Construct protobuf response
-            response = route_engine_pb2.RouteResponse()
-            response.distance = 15000.0  # Dummy distance in meters
-            response.duration = 1800.0   # Dummy duration in seconds
-            
-            for lat, lng in cpp_response:
-                coord = response.polyline.add()
-                coord.lat = lat
-                coord.lng = lng
+            if use_real_algo:
+                # Stage 2: Call the real Dijkstra algorithm
+                cpp_result = route_core.calculate_route(
+                    start.lat, start.lng, end.lat, end.lng
+                )
+                
+                # Construct protobuf response
+                response = route_engine_pb2.RouteResponse()
+                response.distance = cpp_result.distance_m
+                response.duration = cpp_result.duration_s
+                
+                for lat, lng in cpp_result.path:
+                    coord = response.polyline.add()
+                    coord.lat = lat
+                    coord.lng = lng
+                
+                path_len = len(cpp_result.path)
+            else:
+                # Stage 1: Legacy dummy logic
+                cpp_response = route_core.calculate_dummy_route(
+                    start.lat, start.lng, end.lat, end.lng
+                )
+                
+                # Construct protobuf response
+                response = route_engine_pb2.RouteResponse()
+                response.distance = 15000.0  # Dummy distance in meters
+                response.duration = 1800.0   # Dummy duration in seconds
+                
+                for lat, lng in cpp_response:
+                    coord = response.polyline.add()
+                    coord.lat = lat
+                    coord.lng = lng
+                
+                path_len = len(cpp_response)
                 
             elapsed_ms = (time.time() - start_time) * 1000
-            logging.info(f"[DEBUG] RouteService.CalculateRoute | Output: polyline_nodes={len(cpp_response)} length={response.distance}m | Status: Success | Execution: {elapsed_ms:.2f}ms")
+            logging.info(f"[DEBUG] RouteService.CalculateRoute | Output: polyline_nodes={path_len} distance={response.distance}m duration={response.duration}s | Status: Success | Execution: {elapsed_ms:.2f}ms")
             
             return response
             
         except Exception as e:
             logging.error(f"[DEBUG] RouteService.CalculateRoute | Output: Error={str(e)} | Status: Fail")
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details('Internal C++ engine failure')
+            context.set_details(f'Internal C++ engine failure: {str(e)}')
             return route_engine_pb2.RouteResponse()
 
 def serve():

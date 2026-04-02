@@ -21,19 +21,29 @@ const calculateRouteController = async (req, res) => {
         }
 
         logger.info(`Calculating route from (${start.lat}, ${start.lng}) to (${end.lat}, ${end.lng})`);
+        logger.debug('Inbound Request Payload', { start, end });
 
         // Fetch precise route polyline from the Python gRPC Engine
         const grpcResponse = await calculateRouteGrpc(start, end);
 
-        // Ensure polyline property exists as per RouteResponse contract
-        const path = grpcResponse.polyline || [];
-
-        return res.status(200).json({
+        // Standardized Step 2 Response: Routes Array Interface
+        // Wrapping in data.routes array to support future alternative paths (Step 4)
+        const responseData = {
             success: true,
             data: {
-                path: path
+                routes: [
+                    {
+                        path: grpcResponse.polyline || [],
+                        distance: grpcResponse.distance || 0,
+                        duration: grpcResponse.duration || 0
+                    }
+                ]
             }
-        });
+        };
+
+        logger.debug('Outbound Standardized Response', responseData);
+
+        return res.status(200).json(responseData);
     } catch (error) {
         logger.error(`Error in calculateRouteController: ${error.message}`);
         return errorResponse(res, 500, 'Internal Server Error');

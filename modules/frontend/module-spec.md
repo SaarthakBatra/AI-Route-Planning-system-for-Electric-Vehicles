@@ -10,11 +10,15 @@
 - **Status**: ✅ VERIFIED
 - Interactive map interface implemented via Leaflet.js.
 - Supports theme switching (Dark, Light, Satellite).
-- Geolocation support for automatic map centering.
-- Integrated Nominatim API for real-time location autocomplete and geocoding.
-- Captures Start/End coordinates and orchestrates the `/api/routes/calculate` request.
-- Visualizes returned route polylines with automated bounds fitting.
-- Responsive design with UI panels using glassmorphism effects.
+- Captures coordinates and orchestrates basic API calculation request.
+- Visualizes returned polylines with automated bounds fitting.
+
+### Acceptance Criteria (Step 2: Classical Routing Complete)
+- **Status**: ✅ VERIFIED
+- **Map Interaction**: Connect real map clicks to the API to determine Start and End points.
+- **API Consumption**: Parse standardized response nested under `data.data.routes[0]`.
+- **UI Metrics**: Extract and render `distance` (meters) and `duration` (seconds) in human-readable formats (e.g., '14.2 km', '12 mins').
+- **Standard Logging**: Detailed console logging for outbound coordinates and inbound standardized response payloads.
 
 ## 2. Design
 
@@ -24,16 +28,30 @@
 - **Styling**: Modern CSS with glassmorphism and custom typography (Inter).
 
 ### Directory Structure
-- `index.html`: Main entry point and layout.
-- `style.css`: Design system and component styling.
-- `app.js`: Application logic, state management, and API orchestration.
+- `index.html`: Main entry point and layout with hidden info panels.
+- `style.css`: Design system, component styling, and fade-in animations.
+- `app.js`: Application logic, state management, and robust API orchestration.
 
 ### Data Models
 - **Coordinate**: `{ lat: number, lng: number }`
 - **RouteRequest**: `{ start: Coordinate, end: Coordinate }`
-- **RouteResponse**: `{ success: boolean, data: { path: Array<Coordinate> } }`
+- **RouteResponse**: 
+  ```json
+  {
+    "success": boolean,
+    "data": {
+      "routes": [
+        {
+          "path": Array<Coordinate>,
+          "distance": number,
+          "duration": number
+        }
+      ]
+    }
+  }
+  ```
 
 ## 3. Verification
-- **Unit Tests**: `tests/frontend.test.js` (validates utility functions).
-- **Manual Verification**: Functional testing of map clicks, geocoding, and polyline rendering.
+- **Unit Tests**: `tests/frontend.test.js` (validates `formatCoord`, `displayCoord`, `formatDistance`, `formatDuration`).
+- **Interactive Verification**: Manual testing of map clicks, metric display updates, and Reset functionality.
 
