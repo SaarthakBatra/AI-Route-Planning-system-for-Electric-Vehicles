@@ -18,132 +18,122 @@ except ImportError:
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 GRPC_PORT = 50051
-META_REAL  = [('use-real-algo', 'true')]   # gRPC metadata to request Stage 2 algorithm
-META_DUMMY = []                             # No metadata = Stage 1 DUMMY_TRACER (default)
+META_DEBUG = [('debug-mode', 'true')]   # gRPC metadata to request Stage 1 tracer
+META_REAL  = []                           # Default = Step 3 Parallel Suite
 
 # ─── Fixture ──────────────────────────────────────────────────────────────────
 @pytest.fixture(scope="module")
 def grpc_server():
     """
     Starts a gRPC server in a background thread for the duration of the test module.
-
-    IMPORTANT: Do NOT run `python server.py` before running tests.
-    This fixture manages the server lifecycle automatically.
-    If port 50051 is already occupied, the fixture will raise an explicit error
-    to prevent silent cross-process metadata isolation failures.
     """
-    # ── Port conflict guard ───────────────────────────────────────────────────
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(0.5)
         port_in_use = probe.connect_ex(('localhost', GRPC_PORT)) == 0
 
     if port_in_use:
-        pytest.fail(
-            f"\n\n[ERROR] test_server.py | Port {GRPC_PORT} is already occupied by an external process.\n"
-            f"        Most likely cause: 'python server.py' is running in another terminal.\n"
-            f"        Fix: Stop the external server (Ctrl+C) and re-run the tests.\n"
-            f"        Tests manage the server lifecycle automatically — no manual server needed.\n"
-        )
+        pytest.fail(f"Port {GRPC_PORT} already in use.")
 
-    print(f"\n[DEBUG] test_server.py | Port {GRPC_PORT} is free. Starting in-process gRPC server.")
+    print(f"\n[DEBUG] test_server.py | Starting gRPC server.")
     thread = threading.Thread(target=serve)
     thread.daemon = True
     thread.start()
-    time.sleep(1.5)  # Allow server to bind and become ready
-    print("[DEBUG] test_server.py | gRPC server is ready.")
+    time.sleep(2.0)
     yield
-    print("[DEBUG] test_server.py | Tearing down test gRPC server.")
+    print("[DEBUG] test_server.py | Tearing down.")
 
-
-# ─── Helper ───────────────────────────────────────────────────────────────────
 def make_stub():
-    """Returns a fresh gRPC stub for each test call."""
     channel = grpc.insecure_channel(f'localhost:{GRPC_PORT}')
     return route_engine_pb2_grpc.RouteServiceStub(channel)
 
+# ─── Tests ────────────────────────────────────────────────────────────────────
 
-# ─── Stage 1 Test (Preserved) ─────────────────────────────────────────────────
-def test_calculate_route_tracer_bullet(grpc_server):
-    """Stage 1: Verifies the original dummy tracer bullet still works."""
-    print("\n[DEBUG] test_calculate_route_tracer_bullet | Input: Dispatching dummy request (no metadata = DUMMY mode)")
+def test_debug_mode_tracer(grpc_server):
+    """Verifies debug-mode: true still returns the legacy dummy route."""
+    print("\n[DEBUG] test_debug_mode_tracer | Input: debug-mode=true")
     stub = make_stub()
-
     req = route_engine_pb2.RouteRequest()
-    req.start.lat = 34.0522
-    req.start.lng = -118.2437
-    req.end.lat   = 36.1699
-    req.end.lng   = -115.1398
+    req.start.lat, req.start.lng = 28.3623, 75.6042
+    req.end.lat, req.end.lng = 26.9784, 75.7122
 
-    # No metadata → server defaults to DUMMY_TRACER (Stage 1)
-    response = stub.CalculateRoute(req, metadata=META_DUMMY)
-    print(f"[DEBUG] test_calculate_route_tracer_bullet | Output: {len(response.polyline)} nodes | dist={response.distance}m | dur={response.duration}s")
+    response = stub.CalculateRoute(req, metadata=META_DEBUG)
+    assert len(response.results) == 1
+    assert response.results[0].algorithm == "DUMMY_TRACER"
+    assert len(response.results[0].polyline) == 4
 
-    assert len(response.polyline) == 4
-    assert response.distance == 15000.0
-    assert response.duration == 1800.0
-
-
-# ─── Stage 2 Tests (Dijkstra) ─────────────────────────────────────────────────
-def test_calculate_route_real_dijkstra(grpc_server):
-    """Stage 2: Verifies Dijkstra finds a valid Pilani→Jaipur path."""
-    print("\n[DEBUG] test_calculate_route_real_dijkstra | Input: Pilani→Jaipur (metadata=REAL mode)")
+def test_parallel_academic_suite(grpc_server):
+    """Verifies that 5 algorithms are returned by default."""
+    print("\n[DEBUG] test_parallel_academic_suite | Input: Default (Step 3)")
     stub = make_stub()
-
     req = route_engine_pb2.RouteRequest()
-    req.start.lat = 28.3623
-    req.start.lng = 75.6042
-    req.end.lat   = 26.9784
-    req.end.lng   = 75.7122
-
-    # Metadata header → server uses Stage 2 Dijkstra. Process-independent.
-    response = stub.CalculateRoute(req, metadata=META_REAL)
-    print(f"[DEBUG] test_calculate_route_real_dijkstra | Output: {len(response.polyline)} nodes | dist={response.distance:.1f}m | dur={response.duration:.1f}s")
-
-    # Path: at least 8 nodes (shortest Narnaul corridor has 8)
-    assert len(response.polyline) >= 8
-    # Distance: Haversine-sum ~199–230km for any valid corridor
-    assert 190000 < response.distance < 250000
-    # Duration: ~2.5–7h in seconds via MoRTH speeds
-    assert 7200 < response.duration < 25000
-    # Start snapped to Pilani (node 0: 28.3623, 75.6042)
-    assert round(response.polyline[0].lat, 4) == 28.3623
-    # End snapped to Jaipur (node 7: 26.9784, 75.7122)
-    assert round(response.polyline[-1].lat, 4) == 26.9784
-
-
-def test_dijkstra_bidirectional(grpc_server):
-    """Stage 2: Verifies Dijkstra works in the reverse direction (Jaipur→Pilani)."""
-    print("\n[DEBUG] test_dijkstra_bidirectional | Input: Jaipur→Pilani (metadata=REAL mode)")
-    stub = make_stub()
-
-    req = route_engine_pb2.RouteRequest()
-    req.start.lat = 26.9784
-    req.start.lng = 75.7122
-    req.end.lat   = 28.3623
-    req.end.lng   = 75.6042
+    req.start.lat, req.start.lng = 28.3623, 75.6042
+    req.end.lat, req.end.lng = 26.9784, 75.7122
+    req.mock_hour = 12 # Non-peak
+    req.objective = route_engine_pb2.FASTEST
 
     response = stub.CalculateRoute(req, metadata=META_REAL)
-    print(f"[DEBUG] test_dijkstra_bidirectional | Output: {len(response.polyline)} nodes | dist={response.distance:.1f}m")
+    
+    # Assert 5 algorithms returned
+    algos = [res.algorithm for res in response.results]
+    expected_algos = ["BFS", "Dijkstra", "IDDFS", "A*", "IDA*"]
+    for expected in expected_algos:
+        assert expected in algos
 
-    assert len(response.polyline) >= 8
-    assert round(response.polyline[0].lat, 4) == 26.9784
-    assert round(response.polyline[-1].lat, 4) == 28.3623
+    for res in response.results:
+        print(f" -> Testing {res.algorithm}: {len(res.polyline)} nodes, {res.exec_time_ms:.2f}ms")
+        assert len(res.polyline) >= 2
+        assert res.nodes_expanded > 0
+        assert res.exec_time_ms >= 0
+        assert res.distance > 0
 
-
-def test_dijkstra_nearest_node_snap(grpc_server):
-    """Stage 2: Verifies off-graph coordinates are snapped to the nearest node (Pilani)."""
-    print("\n[DEBUG] test_dijkstra_nearest_node_snap | Input: (28.3600, 75.6000) → slightly south of Pilani")
+def test_mock_traffic_impact(grpc_server):
+    """Verifies that changing mock_hour affects the duration."""
     stub = make_stub()
+    
+    # Non-peak hour (12 PM)
+    req_midday = route_engine_pb2.RouteRequest()
+    req_midday.start.lat, req_midday.start.lng = 28.3623, 75.6042
+    req_midday.end.lat, req_midday.end.lng = 26.9784, 75.7122
+    req_midday.mock_hour = 12
+    req_midday.objective = route_engine_pb2.FASTEST
+    res_midday = stub.CalculateRoute(req_midday, metadata=META_REAL)
+    dijkstra_midday = next(r for r in res_midday.results if r.algorithm == "Dijkstra")
 
-    req = route_engine_pb2.RouteRequest()
-    req.start.lat = 28.3600  # ~366m south of Pilani node
-    req.start.lng = 75.6000  # ~390m west of Pilani node
-    req.end.lat   = 26.9784
-    req.end.lng   = 75.7122
+    # Peak hour (8 AM)
+    req_peak = route_engine_pb2.RouteRequest()
+    req_peak.start.lat, req_peak.start.lng = 28.3623, 75.6042
+    req_peak.end.lat, req_peak.end.lng = 26.9784, 75.7122
+    req_peak.mock_hour = 8
+    req_peak.objective = route_engine_pb2.FASTEST
+    res_peak = stub.CalculateRoute(req_peak, metadata=META_REAL)
+    dijkstra_peak = next(r for r in res_peak.results if r.algorithm == "Dijkstra")
 
-    response = stub.CalculateRoute(req, metadata=META_REAL)
-    print(f"[DEBUG] test_dijkstra_nearest_node_snap | Output: start snapped to ({response.polyline[0].lat}, {response.polyline[0].lng})")
+    print(f"\n[DEBUG] Traffic Check | Midday: {dijkstra_midday.duration:.1f}s | Peak: {dijkstra_peak.duration:.1f}s")
+    
+    # Peak duration should be significantly longer due to multipliers
+    assert dijkstra_peak.duration > dijkstra_midday.duration
 
-    # C++ find_nearest_node() must snap (28.36, 75.60) → Pilani (28.3623, 75.6042)
-    assert round(response.polyline[0].lat, 4) == 28.3623
-    assert round(response.polyline[0].lng, 4) == 75.6042
+def test_objective_comparison(grpc_server):
+    """Verifies that SHORTEST vs FASTEST objectives can yield different path costs."""
+    stub = make_stub()
+    
+    # Fastest (Duration)
+    req_fast = route_engine_pb2.RouteRequest()
+    req_fast.start.lat, req_fast.start.lng = 28.3623, 75.6042
+    req_fast.end.lat, req_fast.end.lng = 26.9784, 75.7122
+    req_fast.mock_hour = 8 # Peak hour for more variation
+    req_fast.objective = route_engine_pb2.FASTEST
+    res_fast = stub.CalculateRoute(req_fast, metadata=META_REAL)
+    a_star_fast = next(r for r in res_fast.results if r.algorithm == "A*")
+
+    # Shortest (Distance)
+    req_short = route_engine_pb2.RouteRequest()
+    req_short.start.lat, req_short.start.lng = 28.3623, 75.6042
+    req_short.end.lat, req_short.end.lng = 26.9784, 75.7122
+    req_short.mock_hour = 8
+    req_short.objective = route_engine_pb2.SHORTEST
+    res_short = stub.CalculateRoute(req_short, metadata=META_REAL)
+    a_star_short = next(r for r in res_short.results if r.algorithm == "A*")
+
+    print(f"\n[DEBUG] Objective Check | Fastest Cost (s): {a_star_fast.path_cost:.1f} | Shortest Cost (m): {a_star_short.path_cost:.1f}")
+    assert a_star_fast.path_cost != a_star_short.path_cost

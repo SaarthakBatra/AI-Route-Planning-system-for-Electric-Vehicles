@@ -2,6 +2,11 @@ syntax = "proto3";
 
 package route_engine;
 
+enum Objective {
+    FASTEST = 0;
+    SHORTEST = 1;
+}
+
 message Coordinate {
     double lat = 1;
     double lng = 2;
@@ -10,12 +15,22 @@ message Coordinate {
 message RouteRequest {
     Coordinate start = 1;
     Coordinate end = 2;
+    int32 mock_hour = 3;
+    Objective objective = 4;
+}
+
+message AlgorithmResult {
+    string algorithm = 1;
+    repeated Coordinate polyline = 2;
+    double distance = 3;
+    double duration = 4;
+    int32 nodes_expanded = 5;
+    double exec_time_ms = 6;
+    double path_cost = 7;
 }
 
 message RouteResponse {
-    repeated Coordinate polyline = 1;
-    double distance = 2; // meters
-    double duration = 3; // seconds
+    repeated AlgorithmResult results = 1;
 }
 
 service RouteService {

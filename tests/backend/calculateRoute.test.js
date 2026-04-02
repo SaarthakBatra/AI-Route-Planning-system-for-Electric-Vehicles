@@ -38,9 +38,17 @@ describe('POST /api/routes/calculate', () => {
         ];
         
         calculateRouteGrpc.mockResolvedValue({
-            polyline: mockPolyline,
-            distance: 1000,
-            duration: 300
+            results: [
+                {
+                    algorithm: 'Dijkstra',
+                    polyline: mockPolyline,
+                    distance: 1000,
+                    duration: 300,
+                    nodes_expanded: 42,
+                    exec_time_ms: 0.15,
+                    path_cost: 1000
+                }
+            ]
         });
 
         const response = await request(app)
@@ -52,17 +60,20 @@ describe('POST /api/routes/calculate', () => {
             
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
-        expect(response.body.data.routes).toHaveLength(1);
+        expect(response.body.data.results).toHaveLength(1);
         
-        const route = response.body.data.routes[0];
-        expect(route.path).toHaveLength(3);
-        expect(route.path[0].lat).toBe(40.7128);
-        expect(route.distance).toBe(1000);
-        expect(route.duration).toBe(300);
+        const result = response.body.data.results[0];
+        expect(result.polyline).toHaveLength(3);
+        expect(result.polyline[0].lat).toBe(40.7128);
+        expect(result.distance).toBe(1000);
+        expect(result.duration).toBe(300);
+        expect(result.nodes_expanded).toBe(42);
 
         expect(calculateRouteGrpc).toHaveBeenCalledWith(
             { lat: 40.7128, lng: -74.0060 },
-            { lat: 40.7306, lng: -73.9866 }
+            { lat: 40.7306, lng: -73.9866 },
+            12,
+            'FASTEST'
         );
     });
     

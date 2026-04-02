@@ -8,12 +8,13 @@
 
 - Adheres to the "one function per file" principle for controllers.
 
-### Acceptance Criteria (Step 4 PRE-PLAN: Classical Routing & Mapping)
-- **Status**: 🟢 IN PROGRESS (Step 2 Implementation)
-- API Standardized to "Routes Array Interface" to support future Pareto-optimal results.
-- Responses include `distance` (meters) and `duration` (seconds).
-- Detailed logging implemented for all ingress/egress.
-- Integration tests updated to verify the new response schema.
+### Acceptance Criteria (Step 3: Academic Search Suite)
+- **Status**: 🟢 COMPLETE (Step 3 Implementation)
+- **Multi-Algorithm Support**: API returns 5 results (BFS, Dijkstra, IDDFS, A*, IDA*) in a comparative `results` array.
+- **L3 Complexity**: Supports `mock_hour` (traffic weighting) and `objective` (optimization target).
+- **Metric Transparency**: Every result includes performance telemetry (nodes, latency, path cost).
+- **Communication Protocol**: gRPC orchestration with `use-suite: true` metadata.
+- **Integration**: Backend unit tests cover parameter validation and gRPC error handling.
 
 ## 2. Design
 
@@ -33,31 +34,35 @@
 ### Data Models & API Contracts
 
 **POST `/api/routes/calculate`**
-- **Request**:
-  ```json
-  {
-    "start": { "lat": 40.7128, "lng": -74.0060 },
-    "end": { "lat": 40.7306, "lng": -73.9866 }
-  }
-  ```
-- **Response**:
+- **Request Parameters**:
+    - `start` (Object, Required): `{ lat: number, lng: number }`.
+    - `end` (Object, Required): `{ lat: number, lng: number }`.
+    - `mock_hour` (Number, Optional): Range `0-23`. Defaults to `12`. Used by Engine to apply L3 traffic multipliers.
+    - `objective` (String, Optional): `"FASTEST"` or `"SHORTEST"`. Defaults to `"FASTEST"`.
+- **Response Schema**:
   ```json
   {
     "success": true,
     "data": {
-      "routes": [
+      "results": [
         {
-          "path": [
-            { "lat": 40.7128, "lng": -74.0060 },
-            { "lat": 40.7306, "lng": -73.9866 }
-          ],
-          "distance": 1250,
-          "duration": 450
+          "algorithm": "BFS",             // Search variant used
+          "polyline": [ { "lat": ..., "lng": ... }, ... ],
+          "distance": 1250,               // Path distance in meters
+          "duration": 450,                // Travel time in seconds (L3-adjusted)
+          "nodes_expanded": 84,           // Academic performance metric
+          "exec_time_ms": 0.45,           // Engine-side latency
+          "path_cost": 1250               // Internal algorithm evaluation cost
         }
       ]
     }
   }
   ```
+
+### gRPC Orchestration Contract
+- **Service**: `RouteService.CalculateRoute`
+- **Metadata**: Add `use-suite: true` to trigger the search suite.
+- **Payload**: Maps JSON request fields directly to the `RouteRequest` proto message.
 
 ## 3. Verification
 - **Unit Tests**: `tests/backend/calculateRoute.test.js` (using Jest and Supertest).

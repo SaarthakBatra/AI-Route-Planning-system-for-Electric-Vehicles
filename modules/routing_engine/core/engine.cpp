@@ -4,9 +4,13 @@
 #include <chrono>
 #include <cmath>
 #include <queue>
+#include <stack>
 #include <algorithm>
 #include <string>
 #include <limits>
+#include <future>
+#include <map>
+#include <set>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -26,11 +30,19 @@ struct Edge {
     std::string road_type;
 };
 
-struct RouteResult {
+struct AlgorithmResult {
+    std::string algorithm;
     std::vector<std::pair<double, double>> path;
     double distance_m;
     double duration_s;
-    std::vector<int> node_ids;
+    int nodes_expanded;
+    double exec_time_ms;
+    double path_cost;
+};
+
+enum class Objective {
+    FASTEST = 0,
+    SHORTEST = 1
 };
 
 // --- Utilities ---
@@ -86,7 +98,7 @@ void ensure_graph_initialized() {
 
     auto add_edge = [](int u, int v, int speed, std::string type) {
         double dist = haversine(STATIC_NODES[u].lat, STATIC_NODES[u].lng,
-                               STATIC_NODES[v].lat, STATIC_NODES[v].lng);
+                                STATIC_NODES[v].lat, STATIC_NODES[v].lng);
         adjacency_list[u].push_back({v, dist, speed, type});
         adjacency_list[v].push_back({u, dist, speed, type});
     };
@@ -138,44 +150,121 @@ int find_nearest_node(double lat, double lng) {
     return nearest_id;
 }
 
-// --- Step 1 Legacy Function ---
-std::vector<std::pair<double, double>> calculate_dummy_route(double start_lat, double start_lng, double end_lat, double end_lng) {
-    auto start_time = std::chrono::high_resolution_clock::now();
-    std::cout << "[DEBUG] calculate_dummy_route (C++) | Input: start=(" << start_lat << "," << start_lng 
-              << ") end=(" << end_lat << "," << end_lng << ")\n";
+// --- Traffic Logic ---
+double get_traffic_multiplier(int mock_hour, const std::string& road_type) {
+    // Peak hours: 8-10 AM and 5-7 PM
+    bool is_peak = (mock_hour >= 8 && mock_hour <= 10) || (mock_hour >= 17 && mock_hour <= 19);
+    if (!is_peak) return 1.0;
 
-    std::vector<std::pair<double, double>> polyline = {
-        {start_lat, start_lng},
-        {start_lat + 0.01, start_lng + 0.01},
-        {end_lat - 0.01, end_lng - 0.01},
-        {end_lat, end_lng}
-    };
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> duration = end_time - start_time;
-    std::cout << "[DEBUG] calculate_dummy_route (C++) | Output: polyline_size=" << polyline.size() 
-              << " | Status: Success | Time: " << duration.count() << "ms\n";
-    return polyline;
+    if (road_type == "trunk") return 1.2;
+    if (road_type == "primary") return 1.5;
+    if (road_type == "secondary") return 1.8;
+    return 2.0; // tertiary/other
 }
 
-// --- Step 2 Dijkstra Implementation ---
-RouteResult calculate_route(double start_lat, double start_lng, double end_lat, double end_lng) {
-    ensure_graph_initialized();
+double calculate_edge_cost(const Edge& edge, Objective objective, int mock_hour) {
+    if (objective == Objective::SHORTEST) {
+        return edge.weight_m;
+    } else {
+        double multiplier = get_traffic_multiplier(mock_hour, edge.road_type);
+        double baseline_s = edge.weight_m / (edge.speed_kmh / 3.6);
+        return baseline_s * multiplier;
+    }
+}
+
+// --- Heuristics ---
+double get_heuristic(int n, int target, Objective objective) {
+    double dist = haversine(STATIC_NODES[n].lat, STATIC_NODES[n].lng,
+                            STATIC_NODES[target].lat, STATIC_NODES[target].lng);
+    if (objective == Objective::SHORTEST) {
+        return dist;
+    } else {
+        // Temporal heuristic: distance / max speed (100 km/h)
+        return dist / (100.0 / 3.6);
+    }
+}
+
+// --- Path Reconstruction ---
+AlgorithmResult reconstruct_path(const std::vector<int>& prev, int start_node, int end_node, const std::string& algo_name, int nodes_expanded, double exec_time, Objective objective, int mock_hour) {
+    AlgorithmResult res;
+    res.algorithm = algo_name;
+    res.nodes_expanded = nodes_expanded;
+    res.exec_time_ms = exec_time;
+    res.distance_m = 0;
+    res.duration_s = 0;
+    res.path_cost = 0;
+
+    if (prev[end_node] == -1 && start_node != end_node) return res;
+
+    std::vector<int> path_ids;
+    for (int at = end_node; at != -1; at = prev[at]) {
+        path_ids.push_back(at);
+        if (at == start_node) break;
+    }
+    std::reverse(path_ids.begin(), path_ids.end());
+
+    for (size_t i = 0; i < path_ids.size(); ++i) {
+        int u = path_ids[i];
+        res.path.push_back({STATIC_NODES[u].lat, STATIC_NODES[u].lng});
+
+        if (i > 0) {
+            int p = path_ids[i - 1];
+            for (const auto& edge : adjacency_list[p]) {
+                if (edge.to == u) {
+                    double edge_cost = calculate_edge_cost(edge, objective, mock_hour);
+                    res.path_cost += edge_cost;
+                    res.distance_m += edge.weight_m;
+                    res.duration_s += (objective == Objective::FASTEST) ? edge_cost : (edge.weight_m / (edge.speed_kmh / 3.6));
+                    break;
+                }
+            }
+        }
+    }
+    return res;
+}
+
+// --- Algorithm Implementations ---
+
+AlgorithmResult run_bfs(int start, int end, Objective obj, int hour) {
     auto start_time = std::chrono::high_resolution_clock::now();
+    std::queue<int> q;
+    std::vector<int> prev(STATIC_NODES.size(), -1);
+    std::vector<bool> visited(STATIC_NODES.size(), false);
+    int nodes_expanded = 0;
 
-    int start_node = find_nearest_node(start_lat, start_lng);
-    int end_node = find_nearest_node(end_lat, end_lng);
+    q.push(start);
+    visited[start] = true;
 
-    std::cout << "[DEBUG] calculate_route (C++) | Nearest Snapshot: " 
-              << STATIC_NODES[start_node].name << "(" << start_node << ") -> " 
-              << STATIC_NODES[end_node].name << "(" << end_node << ")\n";
+    while (!q.empty()) {
+        int u = q.front();
+        q.pop();
+        nodes_expanded++;
 
+        if (u == end) break;
+
+        for (const auto& edge : adjacency_list[u]) {
+            if (!visited[edge.to]) {
+                visited[edge.to] = true;
+                prev[edge.to] = u;
+                q.push(edge.to);
+            }
+        }
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    return reconstruct_path(prev, start, end, "BFS", nodes_expanded, exec_time, obj, hour);
+}
+
+AlgorithmResult run_dijkstra(int start, int end, Objective obj, int hour) {
+    auto start_time = std::chrono::high_resolution_clock::now();
     std::priority_queue<std::pair<double, int>, std::vector<std::pair<double, int>>, std::greater<>> pq;
     std::vector<double> dist(STATIC_NODES.size(), std::numeric_limits<double>::infinity());
     std::vector<int> prev(STATIC_NODES.size(), -1);
+    int nodes_expanded = 0;
 
-    dist[start_node] = 0;
-    pq.push({0, start_node});
+    dist[start] = 0;
+    pq.push({0, start});
 
     while (!pq.empty()) {
         double d = pq.top().first;
@@ -183,53 +272,158 @@ RouteResult calculate_route(double start_lat, double start_lng, double end_lat, 
         pq.pop();
 
         if (d > dist[u]) continue;
-        if (u == end_node) break;
+        nodes_expanded++;
+        if (u == end) break;
 
         for (const auto& edge : adjacency_list[u]) {
-            if (dist[u] + edge.weight_m < dist[edge.to]) {
-                dist[edge.to] = dist[u] + edge.weight_m;
+            double cost = calculate_edge_cost(edge, obj, hour);
+            if (dist[u] + cost < dist[edge.to]) {
+                dist[edge.to] = dist[u] + cost;
                 prev[edge.to] = u;
                 pq.push({dist[edge.to], edge.to});
             }
         }
     }
 
-    RouteResult result;
-    result.distance_m = 0;
-    result.duration_s = 0;
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    return reconstruct_path(prev, start, end, "Dijkstra", nodes_expanded, exec_time, obj, hour);
+}
 
-    if (dist[end_node] == std::numeric_limits<double>::infinity()) {
-         std::cout << "[DEBUG] calculate_route (C++) | No path found between static nodes.\n";
-         return result;
+AlgorithmResult run_iddfs(int start, int end, Objective obj, int hour) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+    int nodes_expanded = 0;
+    std::vector<int> final_prev(STATIC_NODES.size(), -1);
+
+    auto dls = [&](auto self, int u, int target, int depth, std::vector<int>& prev, std::vector<bool>& visited) -> bool {
+        nodes_expanded++;
+        if (u == target) return true;
+        if (depth <= 0) return false;
+
+        visited[u] = true;
+        for (const auto& edge : adjacency_list[u]) {
+            if (!visited[edge.to]) {
+                prev[edge.to] = u;
+                if (self(self, edge.to, target, depth - 1, prev, visited)) return true;
+            }
+        }
+        visited[u] = false;
+        return false;
+    };
+
+    for (int limit = 0; limit < (int)STATIC_NODES.size(); ++limit) {
+        std::vector<int> prev(STATIC_NODES.size(), -1);
+        std::vector<bool> visited(STATIC_NODES.size(), false);
+        if (dls(dls, start, end, limit, prev, visited)) {
+            final_prev = prev;
+            break;
+        }
     }
 
-    std::vector<int> path_ids;
-    for (int at = end_node; at != -1; at = prev[at]) {
-        path_ids.push_back(at);
-    }
-    std::reverse(path_ids.begin(), path_ids.end());
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    return reconstruct_path(final_prev, start, end, "IDDFS", nodes_expanded, exec_time, obj, hour);
+}
 
-    result.node_ids = path_ids;
-    for (size_t i = 0; i < path_ids.size(); ++i) {
-        int u = path_ids[i];
-        result.path.push_back({STATIC_NODES[u].lat, STATIC_NODES[u].lng});
-        
-        if (i > 0) {
-            int p = path_ids[i-1];
-            for (const auto& edge : adjacency_list[p]) {
-                if (edge.to == u) {
-                    result.distance_m += edge.weight_m;
-                    result.duration_s += edge.weight_m / (edge.speed_kmh / 3.6);
-                    break;
-                }
+AlgorithmResult run_astar(int start, int end, Objective obj, int hour) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+    std::priority_queue<std::pair<double, int>, std::vector<std::pair<double, int>>, std::greater<>> pq;
+    std::vector<double> g_score(STATIC_NODES.size(), std::numeric_limits<double>::infinity());
+    std::vector<int> prev(STATIC_NODES.size(), -1);
+    int nodes_expanded = 0;
+
+    g_score[start] = 0;
+    pq.push({get_heuristic(start, end, obj), start});
+
+    while (!pq.empty()) {
+        int u = pq.top().second;
+        pq.pop();
+
+        nodes_expanded++;
+        if (u == end) break;
+
+        for (const auto& edge : adjacency_list[u]) {
+            double cost = calculate_edge_cost(edge, obj, hour);
+            double tentative_g = g_score[u] + cost;
+            if (tentative_g < g_score[edge.to]) {
+                prev[edge.to] = u;
+                g_score[edge.to] = tentative_g;
+                pq.push({tentative_g + get_heuristic(edge.to, end, obj), edge.to});
             }
         }
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> duration_ms = end_time - start_time;
-    std::cout << "[DEBUG] calculate_route (C++) | Dijkstra Success | Path Nodes: " << path_ids.size() 
-              << " | Dist: " << result.distance_m << "m | Dur: " << result.duration_s << "s | Time: " << duration_ms.count() << "ms\n";
+    double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    return reconstruct_path(prev, start, end, "A*", nodes_expanded, exec_time, obj, hour);
+}
 
-    return result;
+AlgorithmResult run_idastar(int start, int end, Objective obj, int hour) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+    int nodes_expanded = 0;
+    std::vector<int> final_path;
+    std::vector<int> current_prev(STATIC_NODES.size(), -1);
+
+    auto search = [&](auto self, int u, double g, double threshold, int target, std::vector<int>& prev, std::set<int>& path_set) -> double {
+        nodes_expanded++;
+        double f = g + get_heuristic(u, target, obj);
+        if (f > threshold) return f;
+        if (u == target) return -1.0; // Found
+
+        double min_val = std::numeric_limits<double>::infinity();
+        for (const auto& edge : adjacency_list[u]) {
+            if (path_set.find(edge.to) == path_set.end()) {
+                path_set.insert(edge.to);
+                prev[edge.to] = u;
+                double t = self(self, edge.to, g + calculate_edge_cost(edge, obj, hour), threshold, target, prev, path_set);
+                if (t == -1.0) return -1.0;
+                if (t < min_val) min_val = t;
+                path_set.erase(edge.to);
+            }
+        }
+        return min_val;
+    };
+
+    double threshold = get_heuristic(start, end, obj);
+    std::vector<int> prev(STATIC_NODES.size(), -1);
+    while (true) {
+        std::set<int> path_set = {start};
+        double t = search(search, start, 0, threshold, end, prev, path_set);
+        if (t == -1.0) break; // Found
+        if (t == std::numeric_limits<double>::infinity()) break; // Not found
+        threshold = t;
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+    return reconstruct_path(prev, start, end, "IDA*", nodes_expanded, exec_time, obj, hour);
+}
+
+// --- Multi-threaded Wrapper ---
+std::vector<AlgorithmResult> calculate_all_routes(double start_lat, double start_lng, double end_lat, double end_lng, int mock_hour, int objective_val) {
+    ensure_graph_initialized();
+    int start_node = find_nearest_node(start_lat, start_lng);
+    int end_node = find_nearest_node(end_lat, end_lng);
+    Objective objective = static_cast<Objective>(objective_val);
+
+    std::cout << "[DEBUG] calculate_all_routes (C++) | " << STATIC_NODES[start_node].name << " -> " << STATIC_NODES[end_node].name 
+              << " | Hour: " << mock_hour << " | Obj: " << (objective == Objective::FASTEST ? "Fastest" : "Shortest") << "\n";
+
+    auto f_bfs = std::async(std::launch::async, run_bfs, start_node, end_node, objective, mock_hour);
+    auto f_dijkstra = std::async(std::launch::async, run_dijkstra, start_node, end_node, objective, mock_hour);
+    auto f_iddfs = std::async(std::launch::async, run_iddfs, start_node, end_node, objective, mock_hour);
+    auto f_astar = std::async(std::launch::async, run_astar, start_node, end_node, objective, mock_hour);
+    auto f_idastar = std::async(std::launch::async, run_idastar, start_node, end_node, objective, mock_hour);
+
+    return {f_bfs.get(), f_dijkstra.get(), f_iddfs.get(), f_astar.get(), f_idastar.get()};
+}
+
+// --- Legacy Wrapper ---
+std::vector<std::pair<double, double>> calculate_dummy_route(double start_lat, double start_lng, double end_lat, double end_lng) {
+    return {
+        {start_lat, start_lng},
+        {start_lat + 0.01, start_lng + 0.01},
+        {end_lat - 0.01, end_lng - 0.01},
+        {end_lat, end_lng}
+    };
 }

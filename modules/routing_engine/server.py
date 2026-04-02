@@ -33,64 +33,77 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
         start_time = time.time()
         start = request.start
         end = request.end
+        mock_hour = request.mock_hour
+        objective = request.objective # 0: FASTEST, 1: SHORTEST
         
         # Determine algorithm mode using a priority chain:
-        # Priority 1: gRPC request metadata 'use-real-algo' (set by tests — process-independent)
-        # Priority 2: USE_REAL_ALGO environment variable (set when launching server manually)
-        # Priority 3: Default false (Stage 1 DUMMY_TRACER)
+        # Priority 1: gRPC request metadata 'debug-mode'
+        # Priority 2: DEBUG_MODE environment variable
+        # Priority 3: Default false (Execute 5 Academic Algorithms)
         request_metadata = dict(context.invocation_metadata())
-        use_real_algo_meta = request_metadata.get('use-real-algo', '').lower() == 'true'
-        use_real_algo_env  = os.getenv('USE_REAL_ALGO', 'false').lower() == 'true'
-        use_real_algo = use_real_algo_meta or use_real_algo_env
+        debug_mode_meta = request_metadata.get('debug-mode', '').lower() == 'true'
+        debug_mode_env  = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+        is_debug_mode = debug_mode_meta or debug_mode_env
 
-        algo_mode   = "REAL_DIJKSTRA" if use_real_algo else "DUMMY_TRACER"
-        algo_source = "metadata" if use_real_algo_meta else ("env" if use_real_algo_env else "default")
+        algo_mode   = "DUMMY_TRACER" if is_debug_mode else "PARALLEL_ACADEMIC_SUITE"
+        algo_source = "metadata" if debug_mode_meta else ("env" if debug_mode_env else "default")
 
-        logging.info(f"[DEBUG] RouteService.CalculateRoute | Mode: {algo_mode} (source: {algo_source}) | Input: start=({start.lat}, {start.lng}), end=({end.lat}, {end.lng})")
+        logging.info(f"[DEBUG] RouteService.CalculateRoute | Mode: {algo_mode} (source: {algo_source}) | Input: start=({start.lat}, {start.lng}), end=({end.lat}, {end.lng}) | Hour: {mock_hour} | Obj: {objective}")
         
         try:
-            if use_real_algo:
-                # Stage 2: Call the real Dijkstra algorithm
-                cpp_result = route_core.calculate_route(
-                    start.lat, start.lng, end.lat, end.lng
-                )
-                
-                # Construct protobuf response
-                response = route_engine_pb2.RouteResponse()
-                response.distance = cpp_result.distance_m
-                response.duration = cpp_result.duration_s
-                
-                for lat, lng in cpp_result.path:
-                    coord = response.polyline.add()
-                    coord.lat = lat
-                    coord.lng = lng
-                
-                path_len = len(cpp_result.path)
-            else:
+            response = route_engine_pb2.RouteResponse()
+            
+            if is_debug_mode:
                 # Stage 1: Legacy dummy logic
                 cpp_response = route_core.calculate_dummy_route(
                     start.lat, start.lng, end.lat, end.lng
                 )
                 
-                # Construct protobuf response
-                response = route_engine_pb2.RouteResponse()
-                response.distance = 15000.0  # Dummy distance in meters
-                response.duration = 1800.0   # Dummy duration in seconds
+                res = response.results.add()
+                res.algorithm = "DUMMY_TRACER"
+                res.distance = 15000.0
+                res.duration = 1800.0
+                res.nodes_expanded = 4
+                res.exec_time_ms = 0.1
+                res.path_cost = 15000.0
                 
                 for lat, lng in cpp_response:
-                    coord = response.polyline.add()
+                    coord = res.polyline.add()
                     coord.lat = lat
                     coord.lng = lng
                 
-                path_len = len(cpp_response)
+                logging.info(f"[DEBUG] RouteService.CalculateRoute | Output: Dummy Tracer returned 4 nodes.")
+            else:
+                # Stage 3: Call the parallel academic suite
+                cpp_results = route_core.calculate_all_routes(
+                    start.lat, start.lng, end.lat, end.lng, mock_hour, int(objective)
+                )
                 
+                for res in cpp_results:
+                    algo_res = response.results.add()
+                    algo_res.algorithm = res.algorithm
+                    algo_res.distance = res.distance_m
+                    algo_res.duration = res.duration_s
+                    algo_res.nodes_expanded = res.nodes_expanded
+                    algo_res.exec_time_ms = res.exec_time_ms
+                    algo_res.path_cost = res.path_cost
+                    
+                    for lat, lng in res.path:
+                        coord = algo_res.polyline.add()
+                        coord.lat = lat
+                        coord.lng = lng
+                    
+                    logging.info(f"[DEBUG] Algorithm: {res.algorithm} | Nodes: {res.nodes_expanded} | Time: {res.exec_time_ms:.2f}ms | Cost: {res.path_cost:.2f}")
+
             elapsed_ms = (time.time() - start_time) * 1000
-            logging.info(f"[DEBUG] RouteService.CalculateRoute | Output: polyline_nodes={path_len} distance={response.distance}m duration={response.duration}s | Status: Success | Execution: {elapsed_ms:.2f}ms")
+            logging.info(f"[DEBUG] RouteService.CalculateRoute | Status: Success | Total Execution: {elapsed_ms:.2f}ms")
             
             return response
             
         except Exception as e:
             logging.error(f"[DEBUG] RouteService.CalculateRoute | Output: Error={str(e)} | Status: Fail")
+            import traceback
+            logging.error(traceback.format_exc())
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f'Internal C++ engine failure: {str(e)}')
             return route_engine_pb2.RouteResponse()

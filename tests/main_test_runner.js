@@ -46,6 +46,11 @@ try {
       cwd: path.join(__dirname, '../modules/cache'),
       stdio: 'inherit'
   });
+  console.log(" -> [Cache]: Running tests/cache/osmWorker.test.js");
+  execSync('npm test -- ../../tests/cache/osmWorker.test.js', {
+      cwd: path.join(__dirname, '../modules/cache'),
+      stdio: 'inherit'
+  });
 
   // ── Step 3b: Database (MongoDB) Unit Tests ────────────────────────────────
   console.log("\n[*] Step 3b: Running Database (MongoDB) Unit Tests...");

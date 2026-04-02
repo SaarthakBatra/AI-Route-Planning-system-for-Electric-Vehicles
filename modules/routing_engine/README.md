@@ -28,24 +28,24 @@ python server.py  # ← stop this before running tests
 node tests/main_test_runner.js
 ```
 
-### 2. Running the App for Manual / Backend Integration Testing
-To start the routing engine for connection to the backend, simply run the python server. No recompilation is necessary.
+### 2. Running for Manual / Backend Integration Testing
+To start the routing engine for connection to the backend, run the python server. It now defaults to the Stage 3 Academic Parallel Suite.
 ```bash
 source venv/bin/activate
 python server.py
-# For Stage 2 (real Dijkstra algorithm):
-USE_REAL_ALGO=true python server.py
+# For Stage 1 (dummy tracer bullet):
+DEBUG_MODE=true python server.py
 ```
-*(Note: If you are running tests via `node tests/main_test_runner.js`, the script automatically hooks into the executable path, so you don't even need to activate the venv manually!)*
+*(Note: If you are running tests via `node tests/main_test_runner.js`, the script automatically hooks into the executable path.)*
 
-### 2. Modifying Python Code (`server.py`)
+### 3. Modifying Python Code (`server.py`)
 If you change logic in the Python server:
 - **Action Required**: None. Python interprets on the fly.
 - **Steps**: Just restart the server (`Ctrl+C` and `python server.py`).
 
-### 3. Modifying C++ Algorithms (`core/engine.cpp` or `binding.cpp`)
+### 4. Modifying C++ Algorithms (`core/engine.cpp` or `binding.cpp`)
 If you update the mathematical routing logic or add new C++ bindings:
-- **Action Required**: You must recompile the C++ into the shared python library via `pybind11`.
+- **Action Required**: You must recompile the C++ extension. **Ensure `-pthread` is linked as the engine now uses `std::async`.**
 - **Steps**:
   ```bash
   source venv/bin/activate
@@ -53,56 +53,58 @@ If you update the mathematical routing logic or add new C++ bindings:
   # Restart python server.py
   ```
 
-### 4. Modifying gRPC Contracts (`proto/route_engine.proto`)
-If you change the data shape sent between Node.js and the Python engine:
-- **Action Required**: You must regenerate the Python stubs and interfaces.
+### 5. Modifying gRPC Contracts (`proto/route_engine.proto`)
+If you change the data shape:
+- **Action Required**: Regenerate the Python stubs.
 - **Steps**:
   ```bash
   source venv/bin/activate
-  python -m grpc_tools.protoc -I./proto --python_out=./proto --pyi_out=./proto --grpc_python_out=./proto ./proto/route_engine.proto
-  # Restart python server.py
+  python -m grpc_tools.protoc -I./proto --python_out=./proto --grpc_python_out=./proto ./proto/route_engine.proto
   ```
 
 ---
 
 ## Technical Context for Agents
 
-### Graph Topology (Stage 2)
-The engine currently operates on a **static graph of 26 nodes** representing the Pilani-Jaipur road network. There are three primary corridors:
+### Search Suite Performance (Stage 3)
+The engine executes 5 algorithms concurrently utilizing all available CPU cores. Each algorithm returns a unique footprint:
 
-1. **The Sikar-Ringus Route (NH-52)**
-   - Path: Pilani → Chirawa → Jhunujhunu → Sikar → Ringus → Chomu → Jaipur.
-   - Characterized by high-speed NH-52 (100 km/h).
-2. **The Narnaul-Kotputli Route (NH-11/NH-48)**
-   - Path: Pilani → Chirawa → Singhana → Narnaul → Kotputli → Shahpura → Jaipur.
-   - Geometric shortest path from Pilani (~200km).
-3. **Interior Agricultural Route**
-   - Path: Chirawa → Mandawa → Fatehpur → Sikar.
-   - Slower local roads (50-60 km/h).
+- **Uninformed**: BFS, Dijkstra, IDDFS.
+- **Informed**: A* and IDA* (using Haversine $h_d$ and Temporal $h_t$ heuristics).
+- **Objectives**: Supports `FASTEST` (Duration) and `SHORTEST` (Distance) optimization.
 
-### Data Schema: `RouteResult` (C++)
-When modifying `core/engine.cpp`, note the `RouteResult` struct returned by `calculate_route`:
+### Data Schema: `AlgorithmResult` (C++)
+When modifying `core/engine.cpp`, note the `AlgorithmResult` struct:
+- `algorithm`: `std::string` (Name of algorithm).
 - `path`: `std::vector<std::pair<double, double>>` (lat/lng coordinates).
-- `distance_m`: `double` (total distance in meters).
-- `duration_s`: `double` (total duration in seconds).
-- `node_ids`: `std::vector<int>` (IDs of visited graph nodes).
+- `distance_m`: `double` (Total distance).
+- `duration_s`: `double` (Total duration).
+- `nodes_expanded`: `int` (Count of nodes expanded).
+- `exec_time_ms`: `double` (Raw execution time in ms).
+- `path_cost`: `double` (Objective-specific scalar cost).
 
 ### Algorithm Selection (gRPC Metadata)
-To trigger the Stage 2 Dijkstra algorithm without setting environment variables, send the following gRPC metadata with your request:
-- Key: `use-real-algo`
+Since Stage 3, the server defaults to the parallel search suite. To trigger the Stage 1 legacy dummy tracer, send:
+- Key: `debug-mode`
 - Value: `true` (string)
 
-This is the preferred method for automated testing as it avoids process-level side effects.
+This is the preferred method for bypassing pathfinding during frontend-only validation.
+
+### L3 Mock Traffic Multipliers
+Mock traffic injection is governed by the `mock_hour` gRPC field:
+- **Peak (08:00–10:00, 17:00–19:00)**: Multipliers applied (Trunk: 1.2x, Primary: 1.5x, Secondary: 1.8x, Tertiary: 2.0x).
+- **Off-Peak**: All multipliers are at 1.0x.
 
 ---
 
 ## System Integration Examples
-1. Developer edits `core/engine.cpp` to add aerodynamic drag calculations.
-2. Developer runs `python setup.py build_ext --inplace` to recompile `route_core.so` (or `route_core.pyd` on Windows).
-3. Developer restarts `server.py` and hits the API to test the newly compiled C++ speed/logic.
 
-### Use Case B: Exposing Battery State Parameter
-1. Developer edits `proto/route_engine.proto` to add `double current_battery_soc = 3;` to `RouteRequest`.
-2. Developer runs `python -m grpc_tools.protoc -I./proto ...` to generate the new python interface classes.
-3. Developer maps the new `request.current_battery_soc` variable natively in `server.py` and passes it directly to the Pybind11 C++ function.
-4. Restart `server.py`.
+### Use Case: Adding a New Heuristic
+1. Developer edits `core/engine.cpp` to add a new `get_custom_heuristic()`.
+2. Developer runs `python setup.py build_ext --inplace` to recompile `route_core.so`.
+3. Developer verifies the heuristic change in `A*` or `IDA*`.
+
+### Use Case: Exposing Algorithm Choice
+1. Developer edits `proto/route_engine.proto` to add `AlgorithmSelection` enum.
+2. Developer regenerates Python stubs.
+3. Developer maps the new gRPC request field inside `server.py` to filter the returned `results` array.
