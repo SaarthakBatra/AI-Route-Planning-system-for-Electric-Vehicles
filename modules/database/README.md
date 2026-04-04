@@ -1,100 +1,98 @@
 # Database Module
 
-The Database module manages persistent storage for the AI Route Planner using MongoDB Atlas and the Mongoose ODM. It ensures that data integrity is maintained and provides a centralized interface for all persistence operations.
+Persistent data storage and lifecycle management for the AI Route Planner. This module interfaces with MongoDB Atlas using Mongoose, providing a robust synchronization layer for the system's telemetry and pre-computed results.
 
-## 🚀 Quick Start
+## 1. System Architecture
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Configure `.env`:
-   ```env
-   MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/dbname
-   DEBUG=true
-   ```
-3. Run health check:
-   ```bash
-   node index.js
-   ```
+### 1.1 Connection Lifecycle Flow
+```mermaid
+sequenceDiagram
+    participant B as Backend/App
+    participant DC as mongoClient.js
+    participant L as logger.js
+    participant MA as MongoDB Atlas
 
-## 🏗️ Architecture
+    B->>DC: connectMongo()
+    DC->>L: [CALL] connectMongo (Masked URI)
+    DC->>MA: mongoose.connect()
+    MA-->>DC: Connection Established
+    DC->>L: [INFO] Mongoose connected (Host)
+    DC->>L: [DONE] connectMongo (ReadyState=1)
+    DC-->>B: success (1)
+```
 
-- **ODM**: Uses Mongoose for schema definition and validation.
-- **Connection Management**: Robust lifecycle hooks for logging and error reporting.
-- **Security**: Automatic credential masking in logs.
+### 1.2 Data Persistence Strategy
+```mermaid
+graph LR
+    A[Request Context] --> B[Log Buffer]
+    B --> C{Sync to Disk?}
+    C -- "Yes (Success)" --> D[Output/<UID>/database.md]
+    C -- "Yes (Error)" --> E[Output/Error_logs/]
+```
 
-## 🛠️ Tech Stack
-- **Node.js**: Runtime.
-- **Mongoose**: Modeling and validation layer.
-- **MongoDB Atlas**: Managed multi-cloud database.
+## 2. Real-World Scenarios
 
-## 🧪 Testing
-Run tests from the module directory:
+### Scenario A: The Atlas "Cold Start"
+*   **The Problem**: After a period of inactivity or a cluster maintenance window, initial connection attempts can take 2-3 seconds, potentially delaying critical route calculations.
+*   **The Solution**: Implemented a **Circuit Breaker** with a 5s `serverSelectionTimeoutMS`.
+*   **Engine Behavior**: The module fails fast if the cluster is unreachable, allowing the orchestrator to fall back to the cache layer or return a graceful 503 instead of hanging the Node.js event loop.
+
+### Scenario B: Credential Leaks in Production Logs
+*   **The Problem**: Standard database connection strings contain plain-text passwords. Logging these violates security protocols.
+*   **The Solution**: **Automatic URI Masking**.
+*   **Engine Behavior**: The `mongoClient` uses a regex replacer `MONGO_URI.replace(/:\/\/[^@]+@/, '://<credentials>@')` before passing the URI to the logger, ensuring zero sensitive data exposure.
+
+## 3. Algorithm Performance Matrix (Connection)
+
+| Operation | Target Latency | Optimization | Status |
+| :--- | :--- | :--- | :--- |
+| **Initial Connect** | < 1000ms | Connection Pooling | ✅ Stable |
+| **Re-connection** | < 200ms | Mongoose buffering | ✅ Stable |
+| **Credential Masking**| < 1ms | Pre-compiled Regex | ✅ Verified |
+
+## 4. The War Room: Bugs Faced & Solved
+
+### 4.1 The "Hanging Process" Mystery
+**Issue**: Running the health check via `node index.js` would successfully connect but never return to the shell prompt, causing CI/CD timeouts.
+**Solution**: Discovered that Mongoose maintains an active socket pool even after a successful health check. Added `await disconnectMongo()` to the `runHealthCheck` sequence.
+
+### 4.2 The `.env` Path Ambiguity
+**Issue**: When the database module was required by the `backend`, it failed to find `MONGO_URI` because it was looking for `.env` in the wrong relative directory.
+**Solution**: Refactored to a **dual-layer .env loader** that explicitly checks both `path.join(__dirname, '.env')` and `path.join(__dirname, '../../.env')`.
+
+## 5. Configuration (Environment Variables)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `MONGO_URI` | `null` | MongoDB Atlas Cluster URI. |
+| `DEBUG` | `false` | Enables verbose lifecycle event logging. |
+
+## 6. Lifecycle Commands
+
+### 6.1 Install Dependencies
 ```bash
-npm test
-```
-Or target specific files:
-```bash
-npm test -- ../../tests/database/mongoConnection.test.js
-```
-- **Node.js** v18+
-- **MongoDB Atlas** cluster (free tier M0 is sufficient for Step 1)
-  - See the setup guide at the bottom of this README
-
-## Environment Setup
-Edit `modules/database/.env` and replace the placeholder with your Atlas connection string:
-```
-MONGO_URI=mongodb+srv://username:password@cluster0.abc12.mongodb.net/ai_route_planner?retryWrites=true&w=majority
-DEBUG=true
-```
-> ⚠️ **Never commit a real MONGO_URI to version control.** The `.gitignore` already excludes `.env` files.
-
-## Installation
-```bash
-cd modules/database
 npm install
 ```
 
-## Running the Health Check
+### 6.2 Run Health Check
 ```bash
 node index.js
 ```
-Expected output (with a valid Atlas URI):
-```
-[DATABASE] [INFO]  Initializing...
-[DATABASE] [CALL] connectMongo | input: MONGO_URI: mongodb+srv://<credentials>@cluster0.abc12.mongodb.net/...
-[DATABASE] [INFO]  Mongoose connected    | host: cluster0.abc12.mongodb.net
-[DATABASE] [DONE] connectMongo | output: readyState=1
-[DATABASE] [INFO]  Health check PASSED — MongoDB Atlas connection is healthy.
-[DATABASE] [CALL] disconnectMongo | input: none
-[DATABASE] [INFO]  Mongoose disconnected
-[DATABASE] [DONE] disconnectMongo | output: Connection closed
-```
 
-## Running Tests
-Tests are mocked — no live MongoDB required:
+### 6.3 Execute Test Suite
 ```bash
 npm test
 ```
 
-## Module Structure
-```
-modules/database/
-├── .env                    # MONGO_URI (Atlas connection string), DEBUG
-├── package.json
-├── index.js                # Health-check entry point
-├── module-spec.md          # Module specification and architecture
-├── services/
-│   └── mongoClient.js      # Mongoose connection + connect/disconnect
-└── utils/
-    └── logger.js           # [DATABASE]-prefixed logger with CALL/DONE tracing
+### 6.4 Formatting & Linting
+```bash
+npm run lint
 ```
 
-## MongoDB Atlas Quick Setup
-1. Create a free account at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas)
-2. Create a **free M0 cluster** (no credit card required)
-3. Under **Security → Database Access**: create a database user with Read/Write access
-4. Under **Security → Network Access**: add your IP (`0.0.0.0/0` for development)
-5. Under **Deployment → Connect**: click "Connect your application" → copy the connection string
-6. Replace `<username>`, `<password>`, and `<cluster>` in your `.env` file
+## 7. MongoDB Atlas Quick Setup
+1. Create a free account at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas).
+2. Create an **M0 cluster**.
+3. Add a database user (Read/Write).
+4. Whitelist `0.0.0.0/0` (for development).
+5. Copy the connection string and paste it into your `.env` file.
+

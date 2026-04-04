@@ -2,71 +2,170 @@
 
 An industrial-grade, multi-objective EV route planning system utilizing a high-performance C++/Python routing engine, Node.js orchestration, and a modern Leaflet-based frontend.
 
-## 🚀 Status: Stage 1 Complete ✅
-The "Tracer Bullet" phase is finished. The end-to-end pipeline from the browser through the API gateway to the C++/Python core is validated and verified.
+## 🚀 Status: Stage 3 Complete ✅
+The project has successfully transitioned from a "Tracer Bullet" to a comprehensive **Academic Search Suite (Level 3 Complexity)**. The system now supports dynamic geographic ingestion, comparative pathfinding across 5 algorithms, and real-time performance benchmarking.
 
-## 🏗️ Architecture
+---
 
+## 🏗️ System Architecture
+
+### 1.1 High-Level Component Diagram
 ```mermaid
 graph TD
-    A[Frontend: Leaflet] -- REST --> B[Backend: Express]
-    B -- gRPC --> C[Routing Engine: Python/C++]
-    B -- ioredis --> D[Cache: Redis]
-    B -- Mongoose --> E[Database: MongoDB Atlas]
+    subgraph "External"
+        OSM["OpenStreetMap (Overpass API)"]
+    end
+
+    subgraph "Frontend Layer"
+        UI["Leaflet.js Mapping Interface"]
+        Toast["Glassmorphic Notification Suite"]
+    end
+
+    subgraph "Orchestration Layer (Node.js)"
+        API["Express.js API Gateway"]
+        Cache["Redis Cache-Aside Layer"]
+        DB["MongoDB Atlas Persistence"]
+    end
+
+    subgraph "Execution Layer (Python/C++)"
+        gRPC["gRPC Service Bridge"]
+        Core["C++17 Mathematical Core"]
+    end
+
+    UI -- "REST (JSON)" --> API
+    API -- "getMapData" --> Cache
+    Cache -- "FETCH" --> OSM
+    API -- "CalculateRoute" --> gRPC
+    gRPC -- "pybind11" --> Core
+    API -- "Telemetry" --> DB
 ```
 
-## 📂 Project Structure
-- `modules/backend`: Node.js API Gateway and service orchestrator.
-- `modules/routing_engine`: Python/C++ core with gRPC interface.
-- `modules/cache`: Redis-based caching layer.
-- `modules/database`: MongoDB Atlas persistence layer.
-- `modules/frontend`: Vanilla HTML/JS mapping interface.
-- `tests/`: Centralized test suite for all modules.
+### 1.2 Request-Response Lifecycle
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant B as Backend (Express)
+    participant C as Cache (Redis)
+    participant E as Engine (C++/gRPC)
 
-**Core Objective:**
-To build an industrial-grade, robust, full-stack, location-independent multi-objective Electric Vehicle (EV) Route Planning system (Level 4 Complexity). It performs constrained multi-objective optimization (minimizing travel time and energy consumption while ensuring battery State of Charge constraints) using real road networks to find Pareto-optimal routes. Designed to handle simultaneous multi-user requests in real-time using parallel computing and eventually integrate ML enhancements and an LLM-powered navigation agent.
+    U->>B: POST /api/routes/calculate
+    B->>C: Check BBox Cache (Quantized 4-decimal)
+    alt Cache Miss
+        C->>B: Fetch from Overpass API
+    else Cache Hit
+        C->>B: Return cached map_data
+    end
+    B->>E: gRPC CalculateRoute(map_data, start, end)
+    Note over E: std::async Parallel Execution (5 Algos)
+    E-->>B: Vector<AlgorithmResult>
+    B->>U: JSON Response (Paths + Metrics)
+```
 
-## Architecture and Technology Stack
+---
 
-The project operates under a strict, modular development framework. Cross-module edits are forbidden unless operating in an Integration workspace.
+## 📦 Module Ecosystem
 
-**Module Breakdown & Tech Stack:**
+| Module | Tech Stack | Primary Responsibility |
+| :--- | :--- | :--- |
+| **Backend** | Node.js (Express) | API Orchestration, gRPC Client, Async Context Management. |
+| **Routing Engine** | C++17, Python, gRPC | Algorithmic Core, Parallel Search Execution, Haversine Heuristics. |
+| **Cache** | Redis / Valkey | Geographic Bounding-Box Caching, Coordinate Quantization. |
+| **Database** | MongoDB Atlas | User Telemetry, Persistent Metrics, Security-Masked Logging. |
+| **Frontend** | Vanilla JS, Leaflet.js | Interactive Mapping, Multi-Layer Polyline Rendering, Glassmorphic UI. |
 
-1. **Frontend (`modules/frontend/`)**: mapping UI, multi-criteria sliders, and Pareto-optimal path selection.
-   - *Tech Stack*: Vanilla HTML, CSS, JS with **Leaflet.js + OSM raster tiles**.
-   - *Reason*: Leaflet.js is lightweight, free, and straightforward for the immediate needs of initial phases without the overhead of MapLibre GL JS or OpenLayers.
-2. **Backend (`modules/backend/`)**: API Gateway, business logic, handling concurrent users.
-   - *Tech Stack*: **Node.js with Express.js**.
-   - *Reason*: High scalability for I/O operations and parallel request handling utilizing Node clusters and worker threads for real-time usage.
-3. **Routing Engine (`modules/routing_engine/`)**: Core algorithmic logic computing physics-based edge costs, processing Dijkstra, A*, Multiobjective Dijkstra (MDA).
-   - *Tech Stack*: **C++ integrated into Python via `pybind11`**, communicating via **gRPC**.
-   - *Reason*: Python wraps the service well, but C++ guarantees industrial-grade speed for heavy Level 4 complexity calculations. gRPC is the industry standard for fast, high-density data transfer over REST in microservice interconnectivity.
-4. **Data Ingestion (Internal to Routing Engine)**: Dynamic map fetching.
-   - *Tech Stack*: **Geographic Caching + Redis** (Node.js background worker pre-fetching neighboring bounding boxes).
-   - *Reason*: Free, completely location independent, and mitigates cold starts dynamically. Avoids reliance on OpenRouteService API limits.
-5. **Cache (`modules/cache/`)**: Shared cache for route queries.
-   - *Tech Stack*: **Redis**.
-   - *Reason*: Extremely fast, in-memory data store for minimizing duplicate compute requests.
-6. **Database (`modules/database/`)**: Persistence layer for telemetry and ML data.
-   - *Tech Stack*: **MongoDB Atlas**.
-   - *Reason*: Non-relational, flexible schema storage perfect for varying telemetry documents and future ML training data sets.
+---
 
-## Implementation Strategy & Phasing
+## 🚦 Algorithm Comparison Suite
+The routing engine executes 5 distinct algorithms in parallel for every request, providing a "ground-truth" benchmark for search efficiency.
 
-### Phase 1: D3 Foundation
-- **Focus**: Build the backend, frontend, layout the hybrid C++/Python core routing engine foundation (A* and MDA), Redis cache integration, and Node clusters. Setup initial MongoDB persistence layer.
-- **Use Case**: End-user opens the web mapping UI, selects a starting point in a city and a destination in another city. The UI sliders allow weighting of Time vs Energy. The system transparently fetches OSM road networks, dynamically computes the graph, and the C++ engine determines the Pareto-optimal routes using physical multi-objective constants (rolling resistance, aerodynamic drag, grade resistance). Route is returned efficiently due to Redis caching and plotted over the map. Data of the query is logged to MongoDB.
+| Algorithm | Optimization | Optimality | Search Strategy |
+| :--- | :--- | :--- | :--- |
+| **BFS** | $O(V+E)$ | Not Guaranteed | Uninformed breadth-first exploration. |
+| **Dijkstra** | $O(E \log V)$ | **Guaranteed** | Greedy priority-based edge relaxation. |
+| **IDDFS** | Fringe Search | **Guaranteed** | Iterative depth-first searching (Memory Efficient). |
+| **A\*** | Haversine $h(n)$ | **Guaranteed** | Directed search with geographic heuristics. |
+| **IDA\*** | Epsilon Banding | **Guaranteed** | Heuristic-driven Iterative Deepening. |
 
-### Phase 2: ML/AI & Learned Heuristics
-- **Focus**: Implement Learned Heuristics using Reinforcement Learning (RL/GNN) trained on user telemetry and historical queries.
-- **Use Case**: A user queries a particularly complex routing problem across an entire state. Instead of relying purely on naive A* heuristics, the routing engine queries the learned model from the database telemetry, vastly shrinking the search space and returning highly optimized paths much faster than classical methods.
+---
 
-### Phase 3: Agentic UI
-- **Focus**: Integrate an LLM-powered Routing Agent parsing natural language requests seamlessly.
-- **Use Case**: User types/speaks: "I need to get to Central Park by 5 PM, but I want to arrive with at least 30% battery remaining." The LLM Navigation agent parses these natural language constraints into specific parameters, queries the API, and displays exactly the routes that satisfy those conditions.
+## 🛠️ The War Room: Technical Challenges Overcome
 
-## Development Rules
-- **Testing**: Central test runner (`tests/main_test_runner.js`) manages aggressive algorithmic unit tests, cache hit/miss tests, and high concurrency load tests (Artillery/K6). Tests must pass before proceeding between phases.
-- **Code Style**: Strict JSDoc/TypeScript-like documentation.
-- **Error Handling**: Graceful Try/Catch error catching across algorithmic transitions, standardizing API JSON error outputs. 
-- **Logging**: Centralized Winston/Morgan for request lifecycle tracking.
+### 🧩 Routing Engine: The IDA* Floating Point Pathology
+*   **The Issue**: On real-world graphs with `double` costs, the "next threshold" in IDA* would increase by negligible amounts, leading to millions of redundant iterations.
+*   **The Resolution**: Implemented **Precision Banding** and **Epsilon Cost-Bucketing** to enforce a minimum threshold jump, maintaining admissibility while restoring performance.
+
+### 📡 Backend: The gRPC Payload Crash
+*   **The Issue**: Large urban maps (50MB+) exceeded the default 4MB gRPC message limit, causing `RESOURCE_EXHAUSTED` errors.
+*   **The Resolution**: Reconfigured both client and server to support a **100MB payload limit** and verified stability with 40k-node map test cases.
+
+### 📍 Frontend: Multi-Path Overlap Logic
+*   **The Issue**: Multiple algorithms often return the same optimal path, causing rendered polylines to overlap and disappear.
+*   **The Resolution**: Developed a **Pixel-Space Offset Engine** that bundles identical segments and applies dynamic offsets at `zoomend`, creating a "multi-lane" visualization.
+
+---
+
+## 📈 Project Statistics
+*Data gathered via `cloc` analysis.*
+
+| Metic | Value |
+| :--- | :--- |
+| **Total Files** | 9,019 |
+| **Total Lines of Code** | 1,203,671 |
+| **JavaScript** | 572,452 lines |
+| **Python** | 287,143 lines |
+| **TypeScript** | 149,440 lines |
+
+---
+
+## 🏔️ Roadmap: The Path Forward
+
+### **Phase 1: Foundation (Current)**
+*   **[COMPLETED] Step 1-3**: End-to-end pipeline, Comparison suite, L3 complexity.
+*   **[UPCOMING] Step 4**: Map Graph Persistence (Caching) & Protobuf Serialization for sub-100ms ingestion.
+
+### **Phase 2: ML & L4 Complexity (Planned)**
+*   **Step 5**: Multi-Objective EV Physics (SoC Constraints, rolling resistance).
+*   **Step 8**: Learned Heuristics (RL/GNN) to shrink search space asymptotically.
+
+### **Phase 3: Cognitive Integration (Planned)**
+*   **Step 9**: LLM Agentic Navigation Orchestrator for natural language route parsing.
+
+---
+
+## 🚀 Quick Start (Complete Setup)
+
+### 1. Prerequisites
+- **Node.js**: v18+ (LTS)
+- **Python**: v3.8+ (with `pip`, `venv`)
+- **Redis**: v6.2+ (local or Valkey)
+- **C++ Compiler**: GCC 9+ or Clang 10+ (supporting C++17)
+
+### 2. Module Setup
+Run the following inside each module directory:
+
+```bash
+# Backend / Frontend / Cache / Database
+npm install
+
+# Routing Engine
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python3 setup.py build_ext --inplace
+```
+
+### 3. Environment Configuration
+Create a `.env` in the root directory (using `.env.example` as a template) and configure your `MONGO_URI` and `REDIS_HOST`.
+
+### 4. Running the System
+```bash
+# Start Routing Engine (Terminal 1)
+cd modules/routing_engine && python3 server.py
+
+# Start Backend (Terminal 2)
+cd modules/backend && npm run dev
+```
+Navigate to `http://localhost:3000` to start planning.
+
+---
+*Refer to individual `modules/<name>/README.md` for deep-dive technical specs.*

@@ -3,10 +3,13 @@ require('dotenv').config({ path: __dirname + '/.env' });
 /**
  * @fileoverview Cache module health-check entry point.
  *
- * Purpose: Validate that the Redis connection is healthy on startup.
- * Run directly with: node modules/cache/index.js
+ * Process:
+ *  1. Load module-level environment variables.
+ *  2. Validate Redis connectivity via PING.
+ *  3. Perform a sample OSM worker fetch to verify the Overpass API.
+ *  4. Disconnect and report results.
  *
- * This is NOT a production server — it is a standalone diagnostic script.
+ * Run directly with: node modules/cache/index.js
  */
 
 const { client, pingRedis } = require('./services/redisClient');
@@ -25,11 +28,8 @@ const runHealthCheck = async () => {
     logger.call('runHealthCheck', 'none');
 
     try {
-        // Explicitly connect (lazyConnect=true means it won't auto-connect)
-        logger.debug('Calling client.connect()...');
-        await client.connect();
-
         // Ping the server
+
         const pong = await pingRedis();
         logger.info(`Redis check result: ${pong}`);
 

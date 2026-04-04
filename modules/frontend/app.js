@@ -1,16 +1,40 @@
 /**
- * @fileoverview Frontend Application Logic for AI Route Planner
- * Handles Leaflet map initialization, user interactions, and backend API routing data visualization.
+ * @fileoverview AI Route Planner - Frontend Core Orchestrator
+ *
+ * This module manages the lifecycle of the map-based interface, including:
+ * 1. Leaflet.js initialization and theme management.
+ * 2. User interaction handling (map clicks, keyboard input).
+ * 3. Asynchronus geocoding and autocomplete via Nominatim API.
+ * 4. Comparative route calculation and multi-path visualization.
+ * 5. Glassmorphic telemetry notifications and interaction synchronization.
+ *
+ * @author Antigravity
+ * @version 1.2.0
  */
 
-// Config constants for easy editing
+/**
+ * Global Configuration Tokens
+ * @type {Object}
+ */
 const appConfig = {
-    debounceTimeMs: 800, // The time to wait before querying Nominatim after user stops typing
-    DEBUG: true // Universal constant for detailed logging
+    debounceTimeMs: 800,
+    popupMinimizeTimer: 60000,
+    DEBUG: true,
+    algoColors: {
+        'BFS': '#2196F3',
+        'Dijkstra': '#9C27B0',
+        'IDDFS': '#FF9800',
+        'A*': '#10B981',
+        'IDA*': '#FBBF24'
+    },
+    baseWeight: 10
 };
 
 /**
- * Universal logging utility
+ * Centralized telemetry logger for development debugging.
+ * @param {string} funcName - Originating function name.
+ * @param {string} action - Triggered action or milestone.
+ * @param {any} [data] - Related payload or error object.
  */
 const logDebug = (funcName, action, data) => {
     if (appConfig.DEBUG) {
@@ -18,12 +42,16 @@ const logDebug = (funcName, action, data) => {
     }
 };
 
-// Application State
+/**
+ * Reactive Application State
+ * @type {Object}
+ */
 const state = {
-    startCoords: null, // {lat, lng}
-    endCoords: null,   // {lat, lng}
-    selectionMode: 'start', // 'start' or 'end'
-    routeLayer: null,
+    startCoords: null,
+    endCoords: null,
+    selectionMode: 'start',
+    routeLayers: [],
+    originalStyles: new Map(), // Stores { algorithm: { latLngs, weight, offset, color } }
     markers: {
         start: null,
         end: null
@@ -46,6 +74,9 @@ const mapConfig = {
 const ui = {
     startInput: document.getElementById('start-input'),
     endInput: document.getElementById('end-input'),
+    objectiveSelect: document.getElementById('objective-select'),
+    hourSlider: document.getElementById('hour-slider'),
+    hourDisplay: document.getElementById('hour-display'),
     calcBtn: document.getElementById('calc-route-btn'),
     resetBtn: document.getElementById('reset-btn'),
     statusMsg: document.getElementById('status-message'),
@@ -53,7 +84,8 @@ const ui = {
     endSuggestions: document.getElementById('end-suggestions'),
     routeInfo: document.getElementById('route-info'),
     routeDistance: document.getElementById('route-distance'),
-    routeDuration: document.getElementById('route-duration')
+    routeDuration: document.getElementById('route-duration'),
+    notificationsContainer: document.getElementById('notifications-container')
 };
 
 /**
@@ -94,8 +126,9 @@ const formatDistance = (meters) => {
 
 /**
  * Formats duration in seconds to a human-readable string.
- * @param {number} seconds 
- * @returns {string}
+ * Supports seconds, minutes, and hour/minute combinations.
+ * @param {number} seconds - Raw duration in seconds.
+ * @returns {string} Human-readable time (e.g., '1 hr 5 mins').
  */
 const formatDuration = (seconds) => {
     if (seconds < 60) return Math.round(seconds) + ' secs';
@@ -134,9 +167,9 @@ function initMap() {
         darkTheme.addTo(map);
 
         const baseMaps = {
-            "Dark Theme": darkTheme,
-            "Light Theme": lightTheme,
-            "Satellite": satelliteTheme
+            'Dark Theme': darkTheme,
+            'Light Theme': lightTheme,
+            'Satellite': satelliteTheme
         };
 
         L.control.layers(baseMaps, null, { position: 'bottomleft' }).addTo(map);
@@ -153,7 +186,7 @@ function initMap() {
                 },
                 (err) => {
                     logDebug('initMap', 'GEOLOCATION_ERROR_OR_DENIED', { error: err.message || err });
-                    console.warn("[app] Geolocation skipped or denied.");
+                    console.warn('[app] Geolocation skipped or denied.');
                 }
             );
         }
@@ -169,19 +202,25 @@ function initMap() {
         setupAutocompleteInput(map, 'start');
         setupAutocompleteInput(map, 'end');
 
-        console.log("[app] Map initialized successfully.");
+        // Hour Slider Listener
+        ui.hourSlider.addEventListener('input', (e) => {
+            ui.hourDisplay.innerText = e.target.value;
+        });
+
+        console.log('[app] Map initialized successfully.');
         logDebug('initMap', 'EXIT_SUCCESS');
     } catch (err) {
         logDebug('initMap', 'ERROR', { message: err.message, stack: err.stack });
-        console.error("[app] Map initialization failed:", err);
+        console.error('[app] Map initialization failed:', err);
         showStatus('Critical error: Could not load the map interface.', 'error');
     }
 }
 
 /**
  * Handles map click logic for selecting start/end points.
- * @param {Object} map - Leaflet Map instance
- * @param {Object} latlng - Click coordinates
+ * Automatically toggles between selection modes and updates the UI markers.
+ * @param {Object} map - Leaflet Map instance.
+ * @param {Object} latlng - Click coordinates {lat, lng}.
  */
 function handleMapClick(map, latlng) {
     logDebug('handleMapClick', 'ENTRY', { latlng, currentMode: state.selectionMode });
@@ -195,8 +234,8 @@ function handleMapClick(map, latlng) {
         // Green marker for start
         state.markers.start = L.circleMarker(latlng, {
             radius: 8,
-            fillColor: "#4CAF50",
-            color: "#fff",
+            fillColor: '#4CAF50',
+            color: '#fff',
             weight: 2,
             opacity: 1,
             fillOpacity: 0.9
@@ -205,7 +244,7 @@ function handleMapClick(map, latlng) {
         state.selectionMode = 'end';
         ui.startInput.classList.remove('active');
         ui.endInput.classList.add('active');
-        
+
         logDebug('handleMapClick', 'EXIT_START_SET', { startCoords: state.startCoords, newMode: state.selectionMode });
 
     } else if (state.selectionMode === 'end') {
@@ -217,8 +256,8 @@ function handleMapClick(map, latlng) {
         // Red Marker for End
         state.markers.end = L.circleMarker(latlng, {
             radius: 8,
-            fillColor: "#F44336",
-            color: "#fff",
+            fillColor: '#F44336',
+            color: '#fff',
             weight: 2,
             opacity: 1,
             fillOpacity: 0.9
@@ -241,7 +280,7 @@ function handleMapClick(map, latlng) {
  */
 function setupAutocompleteInput(map, target) {
     logDebug('setupAutocompleteInput', 'ENTRY', { target });
-    
+
     const inputEl = target === 'start' ? ui.startInput : ui.endInput;
     const dropdownEl = target === 'start' ? ui.startSuggestions : ui.endSuggestions;
 
@@ -260,7 +299,7 @@ function setupAutocompleteInput(map, target) {
         }
 
         const lastChar = query[query.length - 1];
-        
+
         if (state.debounceTimers[target]) {
             clearTimeout(state.debounceTimers[target]);
         }
@@ -285,7 +324,7 @@ function setupAutocompleteInput(map, target) {
             handleGeocode(map, inputEl.value, target);
         }
     });
-    
+
     document.addEventListener('click', (e) => {
         if (e.target !== inputEl && !dropdownEl.contains(e.target)) {
             dropdownEl.classList.add('hidden');
@@ -296,7 +335,12 @@ function setupAutocompleteInput(map, target) {
 }
 
 /**
- * Executes a geographic text search for dropdown suggestions.
+ * Executes a geographic text search for dropdown suggestions via Nominatim.
+ * @param {Object} map - Leaflet Map instance.
+ * @param {string} query - Search string.
+ * @param {string} target - Selection target ('start'|'end').
+ * @param {HTMLElement} dropdownEl - UI suggestion container.
+ * @returns {Promise<void>}
  */
 async function fetchSuggestions(map, query, target, dropdownEl) {
     logDebug('fetchSuggestions', 'ENTRY', { query, target });
@@ -307,10 +351,10 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
     try {
         const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
         logDebug('fetchSuggestions', 'API_REQUEST', { url });
-        
+
         const response = await fetch(url);
         logDebug('fetchSuggestions', 'API_RESPONSE', { status: response.status });
-        
+
         const data = await response.json();
         logDebug('fetchSuggestions', 'API_DATA', { resultCount: data ? data.length : 0 });
 
@@ -323,14 +367,14 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
                 div.innerText = item.display_name;
                 div.addEventListener('click', () => {
                     logDebug('fetchSuggestions_SuggestionClick', 'ENTRY', { display_name: item.display_name, lat: item.lat, lon: item.lon });
-                    
+
                     const latlng = { lat: parseFloat(item.lat), lng: parseFloat(item.lon) };
-                    const shortName = item.display_name.split(',')[0] + ", " + (item.display_name.split(',').pop().trim());
-                    
+                    const shortName = item.display_name.split(',')[0] + ', ' + (item.display_name.split(',').pop().trim());
+
                     const inputEl = target === 'start' ? ui.startInput : ui.endInput;
                     inputEl.value = shortName;
                     dropdownEl.classList.add('hidden');
-                    
+
                     plotMarker(map, latlng, target, shortName);
                     logDebug('fetchSuggestions_SuggestionClick', 'EXIT_SUCCESS');
                 });
@@ -343,12 +387,16 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
         }
     } catch (err) {
         logDebug('fetchSuggestions', 'ERROR', { message: err.message, stack: err.stack });
-        console.error("[app] Autocomplete error:", err);
+        console.error('[app] Autocomplete error:', err);
     }
 }
 
 /**
- * Universal marker plotter.
+ * Universal marker plotter for both map clicks and search selections.
+ * @param {Object} map - Leaflet Map instance.
+ * @param {Object} latlng - Coordinates {lat, lng}.
+ * @param {string} target - 'start' or 'end'.
+ * @param {string} [shortName] - Display name for the input field.
  */
 function plotMarker(map, latlng, target, shortName) {
     logDebug('plotMarker', 'ENTRY', { latlng, target, shortName });
@@ -356,7 +404,7 @@ function plotMarker(map, latlng, target, shortName) {
         state.startCoords = latlng;
         if (state.markers.start) map.removeLayer(state.markers.start);
         state.markers.start = L.circleMarker(latlng, {
-            radius: 8, fillColor: "#4CAF50", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
+            radius: 8, fillColor: '#4CAF50', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.9
         }).addTo(map);
         state.selectionMode = 'end';
         ui.startInput.classList.remove('active');
@@ -366,7 +414,7 @@ function plotMarker(map, latlng, target, shortName) {
         state.endCoords = latlng;
         if (state.markers.end) map.removeLayer(state.markers.end);
         state.markers.end = L.circleMarker(latlng, {
-            radius: 8, fillColor: "#F44336", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.9
+            radius: 8, fillColor: '#F44336', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.9
         }).addTo(map);
         state.selectionMode = 'done';
         ui.endInput.classList.remove('active');
@@ -389,7 +437,7 @@ async function handleGeocode(map, query, target) {
         logDebug('handleGeocode', 'EXIT_NO_QUERY');
         return;
     }
-    
+
     showStatus(`Searching for ${query}...`, 'loading');
     try {
         const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
@@ -400,17 +448,17 @@ async function handleGeocode(map, query, target) {
 
         const data = await response.json();
         logDebug('handleGeocode', 'API_DATA', { resultCount: data ? data.length : 0 });
-        
-        if (!data || data.length === 0) throw new Error("Location not found");
-        
+
+        if (!data || data.length === 0) throw new Error('Location not found');
+
         const latlng = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-        const shortName = data[0].display_name.split(',')[0] + ", " + (data[0].display_name.split(',').pop().trim());
-        
+        const shortName = data[0].display_name.split(',')[0] + ', ' + (data[0].display_name.split(',').pop().trim());
+
         plotMarker(map, latlng, target, shortName);
-        
+
         showStatus('Location found', 'success');
         setTimeout(() => showStatus('', 'hidden'), 2500);
-        
+
         logDebug('handleGeocode', 'EXIT_SUCCESS');
     } catch (err) {
         logDebug('handleGeocode', 'ERROR', { message: err.message, stack: err.stack });
@@ -419,9 +467,10 @@ async function handleGeocode(map, query, target) {
 }
 
 /**
- * Fetches the route from the backend and draws it on the map.
- * Implementation for Step 1: Tracer Bullet.
- * @param {Object} map - Leaflet Map instance
+ * Orchestrates the full route comparison suite by querying the backend.
+ * Parses the multi-algorithm response and triggers visualization layers.
+ * @param {Object} map - Leaflet Map instance.
+ * @returns {Promise<void>}
  */
 async function calculateRoute(map) {
     logDebug('calculateRoute', 'ENTRY');
@@ -431,32 +480,34 @@ async function calculateRoute(map) {
     }
 
     ui.calcBtn.disabled = true;
-    showStatus('Calculating route...', 'loading');
+    showStatus('Running comparison suite...', 'loading');
 
     const payload = {
         start: formatCoord(state.startCoords),
-        end: formatCoord(state.endCoords)
+        end: formatCoord(state.endCoords),
+        objective: ui.objectiveSelect.value,
+        mock_hour: parseInt(ui.hourSlider.value)
     };
 
     try {
         const fetchUrl = 'http://localhost:3000/api/routes/calculate';
-        
+
         // PROJECT REQUIREMENT: Detailed logging for coordinates sent
-        console.log("[app] Sending coordinates to API:", JSON.stringify(payload, null, 2));
+        console.log('[app] Sending comparison request to API:', JSON.stringify(payload, null, 2));
         logDebug('calculateRoute', 'API_REQUEST', { method: 'POST', url: fetchUrl, payload });
-        
+
         const response = await fetch(fetchUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        
+
         logDebug('calculateRoute', 'API_RESPONSE_STATUS', { status: response.status, ok: response.ok });
 
         const data = await response.json();
-        
+
         // PROJECT REQUIREMENT: Detailed logging for full response
-        console.log("[app] Received full response from API:", JSON.stringify(data, null, 2));
+        console.log('[app] Received full comparison response:', JSON.stringify(data, null, 2));
         logDebug('calculateRoute', 'API_RESPONSE_DATA', data);
 
         if (!response.ok) {
@@ -465,29 +516,28 @@ async function calculateRoute(map) {
             throw new Error(errorMsg);
         }
 
-        // Standardized Response Handling (Step 2)
-        if (!data.success || !data.data || !data.data.routes || !data.data.routes[0]) {
-            throw new Error('Invalid response format: data.data.routes[0] missing');
+        if (!data.success || !data.data || !data.data.results) {
+            throw new Error('Invalid response format: data.data.results missing');
         }
 
-        const route = data.data.routes[0];
-        if (!route.path) {
-            throw new Error('Invalid response format: path missing in route');
+        const results = data.data.results;
+
+        renderAllRoutes(map, results);
+        spawnAlgorithmToasts(results);
+
+        // Update primary UI with the first result (usually best)
+        if (results.length > 0) {
+            ui.routeDistance.innerText = formatDistance(results[0].distance || 0);
+            ui.routeDuration.innerText = formatDuration(results[0].duration || 0);
+            ui.routeInfo.classList.remove('hidden');
         }
 
-        renderRoute(map, route.path);
-        
-        // Update UI with distance and duration
-        ui.routeDistance.innerText = formatDistance(route.distance || 0);
-        ui.routeDuration.innerText = formatDuration(route.duration || 0);
-        ui.routeInfo.classList.remove('hidden');
-
-        showStatus('Route retrieved successfully.', 'success');
+        showStatus('Comparison complete.', 'success');
         logDebug('calculateRoute', 'EXIT_SUCCESS');
 
     } catch (error) {
         logDebug('calculateRoute', 'ERROR', { message: error.message, stack: error.stack });
-        console.error("[app] Route calculation failed:", error);
+        console.error('[app] Route calculation failed:', error);
         showStatus(`Error: ${error.message}`, 'error');
         ui.routeInfo.classList.add('hidden');
     } finally {
@@ -497,34 +547,274 @@ async function calculateRoute(map) {
 }
 
 /**
- * Connects the array of coordinates to the map via Leaflet Polyline.
- * @param {Object} map - Leaflet Map instance
- * @param {Array} pathCoords - Array of {lat, lng} coordinate objects
+ * Renders all 5 algorithm paths with unique colors and pixel-space stack weights.
+ * Handles identical path detection to prevent visual noise.
+ * @param {Object} map - Leaflet Map instance.
+ * @param {Array<Object>} results - Collection of AlgorithmResult objects.
  */
-function renderRoute(map, pathCoords) {
-    logDebug('renderRoute', 'ENTRY', { pathCoordsLength: pathCoords.length });
-    
-    if (state.routeLayer) {
-        map.removeLayer(state.routeLayer);
-        logDebug('renderRoute', 'REMOVED_EXISTING_LAYER');
+function renderAllRoutes(map, results) {
+    logDebug('renderAllRoutes', 'ENTRY', { count: results.length });
+
+    // Clear existing
+    state.routeLayers.forEach(layer => map.removeLayer(layer));
+    state.routeLayers = [];
+    state.originalStyles.clear();
+
+    // Group results by identical path (polyline coordinates string)
+    const pathGroups = new Map();
+    results.forEach(res => {
+        const pathKey = JSON.stringify(res.polyline);
+        if (!pathGroups.has(pathKey)) pathGroups.set(pathKey, []);
+        pathGroups.get(pathKey).push(res);
+    });
+
+    const TOTAL_BUNDLE_WIDTH = 10;
+    const featureGroup = L.featureGroup();
+
+    pathGroups.forEach((group, pathKey) => {
+        const N = group.length;
+        const perLineWidth = TOTAL_BUNDLE_WIDTH / N;
+        const baseLatLngs = JSON.parse(pathKey).map(c => [c.lat, c.lng]);
+
+        group.forEach((res, index) => {
+            const color = appConfig.algoColors[res.algorithm] || '#fff';
+            // Calculate offset in pixels: (index - (N-1)/2) * perLineWidth
+            const offsetPx = (index - (N - 1) / 2) * perLineWidth;
+
+            const latLngs = (offsetPx === 0) ? baseLatLngs : getOffsetPoints(map, baseLatLngs, offsetPx);
+
+            const layer = L.polyline(latLngs, {
+                color: color,
+                weight: perLineWidth,
+                opacity: 0.9,
+                lineJoin: 'round',
+                interactive: false // We use the toast for interaction
+            }).addTo(map);
+
+            // Store for hover logic
+            state.originalStyles.set(res.algorithm, {
+                layer: layer,
+                baseLatLngs: baseLatLngs,
+                weight: perLineWidth,
+                offsetPx: offsetPx,
+                color: color
+            });
+
+            state.routeLayers.push(layer);
+            featureGroup.addLayer(layer);
+        });
+    });
+
+    if (state.routeLayers.length > 0) {
+        map.fitBounds(featureGroup.getBounds(), { padding: [50, 50] });
     }
 
-    // Convert {lat, lng} objects to [lat, lng] arrays for Leaflet
-    const latLngPairs = pathCoords.map(coord => [coord.lat, coord.lng]);
+    // Refresh offsets on zoom to keep bundle pixel-perfect
+    map.off('zoomend', refreshRouteOffsets).on('zoomend', refreshRouteOffsets);
 
-    state.routeLayer = L.polyline(latLngPairs, {
-        color: '#2196F3',
-        weight: 5,
-        opacity: 0.8
-    }).addTo(map);
+    logDebug('renderAllRoutes', 'EXIT_SUCCESS');
+}
 
-    // Zoom to fit bounds if there are points
-    if (latLngPairs.length > 0) {
-        map.fitBounds(state.routeLayer.getBounds(), { padding: [50, 50] });
-        logDebug('renderRoute', 'FITTED_BOUNDS');
-    }
+/**
+ * Re-calculates offsets on zoom to maintain 10px bundle size
+ */
+function refreshRouteOffsets() {
+    const map = state.routeLayers[0]?._map;
+    if (!map) return;
+    state.originalStyles.forEach((style, _algo) => {
+        if (style.offsetPx !== 0) {
+            const newLatLngs = getOffsetPoints(map, style.baseLatLngs, style.offsetPx);
+            style.layer.setLatLngs(newLatLngs);
+        }
+    });
+}
+
+/**
+ * Focuses a specific route on hover
+ */
+function focusRoute(algorithm) {
+    const activeStyle = state.originalStyles.get(algorithm);
+    if (!activeStyle) return;
+
+    state.originalStyles.forEach((style, algo) => {
+        if (algo === algorithm) {
+            // Focus this one: full width, no offset
+            style.layer.setStyle({ weight: 10, opacity: 1 });
+            style.layer.setLatLngs(style.baseLatLngs);
+            style.layer.bringToFront();
+        } else {
+            // Hide others
+            style.layer.setStyle({ opacity: 0 });
+        }
+    });
+}
+
+/**
+ * Restores original bundle visualization
+ */
+function restoreRoutes() {
+    const map = state.routeLayers[0]?._map;
+    state.originalStyles.forEach((style, _algo) => {
+        const latLngs = (style.offsetPx === 0 || !map) ? style.baseLatLngs : getOffsetPoints(map, style.baseLatLngs, style.offsetPx);
+        style.layer.setStyle({
+            weight: style.weight,
+            opacity: 0.9
+        });
+        style.layer.setLatLngs(latLngs);
+    });
+}
+
+/**
+ * Helper to offset polyline points in pixel space
+ */
+function getOffsetPoints(map, points, offset) {
+    if (!map || offset === 0) return points;
     
-    logDebug('renderRoute', 'EXIT_SUCCESS');
+    // Ensure points are [lat, lng] arrays or L.LatLng objects
+    const containerPoints = points.map(p => map.latLngToContainerPoint(p));
+    const offsetPoints = [];
+
+    for (let i = 0; i < containerPoints.length; i++) {
+        let normal = { x: 0, y: 0 };
+        let count = 0;
+
+        if (i < containerPoints.length - 1) {
+            const p1 = containerPoints[i];
+            const p2 = containerPoints[i + 1];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len > 0) {
+                normal.x += -dy / len;
+                normal.y += dx / len;
+                count++;
+            }
+        }
+        if (i > 0) {
+            const p1 = containerPoints[i - 1];
+            const p2 = containerPoints[i];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len > 0) {
+                normal.x += -dy / len;
+                normal.y += dx / len;
+                count++;
+            }
+        }
+
+        if (count > 0) {
+            const nx = normal.x / count;
+            const ny = normal.y / count;
+            const nLen = Math.sqrt(nx * nx + ny * ny);
+            if (nLen > 0) {
+                const offX = (nx / nLen) * offset;
+                const offY = (ny / nLen) * offset;
+                offsetPoints.push(map.containerPointToLatLng([
+                    containerPoints[i].x + offX,
+                    containerPoints[i].y + offY
+                ]));
+            } else {
+                offsetPoints.push(points[i]);
+            }
+        } else {
+            offsetPoints.push(points[i]);
+        }
+    }
+    return offsetPoints;
+}
+
+/**
+ * Spawns concurrent glassmorphic toasts for algorithm performance data.
+ */
+function spawnAlgorithmToasts(results) {
+    logDebug('spawnAlgorithmToasts', 'ENTRY');
+
+    // Clear previous toasts
+    ui.notificationsContainer.innerHTML = '';
+
+    results.forEach((res, index) => {
+        // Stagger entrance slightly for visual polish
+        setTimeout(() => createAlgorithmToast(res), index * 100);
+    });
+}
+
+/**
+ * Creates and appends a single toast notification.
+ */
+function createAlgorithmToast(data) {
+    const toast = document.createElement('div');
+    toast.className = 'algorithm-toast';
+    const color = appConfig.algoColors[data.algorithm] || '#ffffff';
+    toast.style.setProperty('--algo-accent', color);
+
+    toast.innerHTML = `
+        <div class="toast-header">
+            <h3>${data.algorithm}</h3>
+            <div class="toast-controls">
+                <button class="minimize-toast" title="Toggle Minimize">▲</button>
+                <button class="close-toast" title="Close">&times;</button>
+            </div>
+        </div>
+        <div class="toast-body">
+            <div class="toast-stat">
+                <span class="label">Nodes Exp</span>
+                <span class="value">${data.nodes_expanded.toLocaleString()}</span>
+            </div>
+            <div class="toast-stat">
+                <span class="label">Time</span>
+                <span class="value">${data.exec_time_ms}ms</span>
+            </div>
+            <div class="toast-stat">
+                <span class="label">Distance</span>
+                <span class="value">${formatDistance(data.distance)}</span>
+            </div>
+            <div class="toast-stat">
+                <span class="label">Cost</span>
+                <span class="value">${data.path_cost.toFixed(2)}</span>
+            </div>
+        </div>
+    `;
+
+    // Toggle Minimize
+    toast.querySelector('.minimize-toast').addEventListener('click', () => {
+        toast.classList.toggle('minimized');
+    });
+
+    // Manual Close
+    toast.querySelector('.close-toast').addEventListener('click', () => {
+        destroyToast(toast);
+    });
+
+    // Hover Focus Interaction
+    toast.addEventListener('mouseenter', () => {
+        focusRoute(data.algorithm);
+    });
+
+    toast.addEventListener('mouseleave', () => {
+        restoreRoutes();
+    });
+
+    ui.notificationsContainer.appendChild(toast);
+
+    // Auto-minimize instead of auto-destruct
+    setTimeout(() => {
+        if (toast.parentElement) {
+            toast.classList.add('minimized');
+        }
+    }, appConfig.popupMinimizeTimer);
+}
+
+/**
+ * Handles toast destruction with animation.
+ */
+function destroyToast(toast) {
+    toast.classList.add('fade-out');
+    toast.addEventListener('animationend', () => {
+        if (toast.parentElement) {
+            toast.remove();
+        }
+    });
 }
 
 /**
@@ -533,17 +823,20 @@ function renderRoute(map, pathCoords) {
  */
 function resetState(map) {
     logDebug('resetState', 'ENTRY');
-    
+
     if (state.markers.start) map.removeLayer(state.markers.start);
     if (state.markers.end) map.removeLayer(state.markers.end);
-    if (state.routeLayer) map.removeLayer(state.routeLayer);
+    state.routeLayers.forEach(layer => map.removeLayer(layer));
+    state.originalStyles.clear();
+    map.off('zoomend', refreshRouteOffsets);
 
     state.startCoords = null;
     state.endCoords = null;
     state.selectionMode = 'start';
     state.markers.start = null;
     state.markers.end = null;
-    state.routeLayer = null;
+    state.routeLayers = [];
+    ui.notificationsContainer.innerHTML = '';
 
     ui.startInput.value = '';
     ui.endInput.value = '';
@@ -552,7 +845,7 @@ function resetState(map) {
     ui.routeDistance.innerText = '-';
     ui.routeDuration.innerText = '-';
     showStatus('', 'hidden');
-    
+
     logDebug('resetState', 'EXIT_SUCCESS');
 }
 

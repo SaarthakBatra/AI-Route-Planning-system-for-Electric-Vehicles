@@ -15,9 +15,20 @@ struct AlgorithmResult {
     int nodes_expanded;
     double exec_time_ms;
     double path_cost;
+    std::string debug_logs;
+    bool circuit_breaker_triggered;
 };
 
-std::vector<AlgorithmResult> calculate_all_routes(double start_lat, double start_lng, double end_lat, double end_lng, int mock_hour, int objective_val);
+std::vector<AlgorithmResult> calculate_all_routes(
+    double start_lat, double start_lng, double end_lat, double end_lng, 
+    int mock_hour, int objective_val, bool algo_debug = false,
+    const std::vector<std::tuple<int, double, double, std::string>>& dyn_nodes = {},
+    const std::vector<std::tuple<int, int, double, int, std::string>>& dyn_edges = {},
+    int max_nodes = 1000000,
+    double banding_shortest = 1.0,
+    double banding_fastest = 0.1,
+    double epsilon_min = 10.0
+);
 std::vector<std::pair<double, double>> calculate_dummy_route(double start_lat, double start_lng, double end_lat, double end_lng);
 
 PYBIND11_MODULE(route_core, m) {
@@ -31,14 +42,23 @@ PYBIND11_MODULE(route_core, m) {
         .def_readonly("duration_s", &AlgorithmResult::duration_s)
         .def_readonly("nodes_expanded", &AlgorithmResult::nodes_expanded)
         .def_readonly("exec_time_ms", &AlgorithmResult::exec_time_ms)
-        .def_readonly("path_cost", &AlgorithmResult::path_cost);
+        .def_readonly("path_cost", &AlgorithmResult::path_cost)
+        .def_readonly("debug_logs", &AlgorithmResult::debug_logs)
+        .def_readonly("circuit_breaker_triggered", &AlgorithmResult::circuit_breaker_triggered);
 
     // Bind the multi-algorithm calculation function
     m.def("calculate_all_routes", &calculate_all_routes, 
           "Calculate 5 academic routes in parallel",
           py::arg("start_lat"), py::arg("start_lng"), 
           py::arg("end_lat"), py::arg("end_lng"),
-          py::arg("mock_hour"), py::arg("objective_val"));
+          py::arg("mock_hour"), py::arg("objective_val"),
+          py::arg("algo_debug") = false,
+          py::arg("dyn_nodes") = std::vector<std::tuple<int, double, double, std::string>>(),
+          py::arg("dyn_edges") = std::vector<std::tuple<int, int, double, int, std::string>>(),
+          py::arg("max_nodes") = 1000000,
+          py::arg("banding_shortest") = 1.0,
+          py::arg("banding_fastest") = 0.1,
+          py::arg("epsilon_min") = 10.0);
 
     // Bind legacy function for debug-mode
     m.def("calculate_dummy_route", &calculate_dummy_route, 

@@ -1,0 +1,23 @@
+{
+  "name": "ai-route-planner-frontend",
+  "version": "1.1.0",
+  "description": "Interactive map-based interface for the AI Route Planner.",
+  "main": "app.js",
+  "scripts": {
+    "test": "node ../../tests/frontend.test.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "keywords": [
+    "leaflet",
+    "routing",
+    "glassmorphism",
+    "frontend"
+  ],
+  "author": "Antigravity",
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0"
+  }
+}

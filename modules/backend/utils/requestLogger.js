@@ -1,3 +1,8 @@
+/**
+ * @file requestLogger.js
+ * @module backend/utils/requestLogger
+ * @description Express middleware for automatic inbound request and outbound response logging.
+ */
 const logger = require('./logger');
 
 /**
@@ -13,10 +18,10 @@ const requestLogger = (req, res, next) => {
     const { method, originalUrl, query, body } = req;
     const startTime = Date.now();
 
-    logger.debug(`--- INCOMING REQUEST ---`);
+    logger.debug('--- INCOMING REQUEST ---');
     logger.debug(`${method} ${originalUrl}`);
-    if (Object.keys(query).length) logger.debug(`Query:`, query);
-    if (Object.keys(body).length) logger.debug(`Body:`, body);
+    if (Object.keys(query).length) logger.debug('Query:', query);
+    if (Object.keys(body).length) logger.debug('Body:', body);
 
     // Intercept res.json
     const originalJson = res.json;
@@ -24,7 +29,7 @@ const requestLogger = (req, res, next) => {
         const duration = Date.now() - startTime;
         logger.debug(`--- OUTGOING JSON RESPONSE (${duration}ms) ---`);
         logger.debug(`Status: ${res.statusCode}`);
-        logger.debug(`Payload:`, obj);
+        logger.debug('Payload:', obj);
         return originalJson.call(this, obj);
     };
 
@@ -37,7 +42,7 @@ const requestLogger = (req, res, next) => {
             const duration = Date.now() - startTime;
             logger.debug(`--- OUTGOING RESPONSE (${duration}ms) ---`);
             logger.debug(`Status: ${res.statusCode}`);
-            logger.debug(`Payload:`, content);
+            logger.debug('Payload:', content);
         }
         return originalSend.call(this, content);
     };

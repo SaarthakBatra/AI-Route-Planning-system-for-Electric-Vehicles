@@ -1,41 +1,48 @@
-require('dotenv').config({ path: __dirname + '/.env' });
-
 /**
- * @fileoverview Centralized logger for the Cache module.
- * Prefixes all messages with [CACHE] and supports CALL/DONE tracing.
- * Controlled by the DEBUG environment variable.
+ * @fileoverview Request-context-aware logger for the Cache module.
+ *
+ * Features:
+ *  - Categorized logging (INFO, WARN, ERROR, CALL, DONE).
+ *  - Automatic request-buffer synchronization for log flushing.
  */
+const { storage } = require('../../backend/utils/context');
 
 const PREFIX = '[CACHE]';
 
 /**
- * Core logger object with info, error, warn, and debug levels.
- * Every exported function from this module uses these methods.
+ * Pushes log entries to the in-memory buffer for the current request.
+ * @param {string} level - Log level (INFO, ERROR, etc)
+ * @param {string} msg - The message
+ * @param {any} data - Optional data to log
+ */
+const bufferLog = (level, msg, data = null) => {
+    const store = storage.getStore();
+    if (!store || !store.cacheBuffer) return;
+
+    const isoTime = new Date().toISOString();
+    let entry = `| ${isoTime} | ${level} | ${msg} |`;
+    if (data) {
+        entry += `\n\n**Data:**\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\`\n`;
+    }
+    store.cacheBuffer.push(entry);
+};
+
+/**
+ * Core logger object with buffered Markdown synchronization.
  */
 const logger = {
-    /**
-     * Logs an informational message.
-     * @param {string} msg - The message to log.
-     */
-    info: (msg) => console.log(`${PREFIX} [INFO]  ${msg}`),
-
-    /**
-     * Logs an error message.
-     * @param {string} msg - The error message.
-     */
-    error: (msg) => console.error(`${PREFIX} [ERROR] ${msg}`),
-
-    /**
-     * Logs a warning message.
-     * @param {string} msg - The warning message.
-     */
-    warn: (msg) => console.warn(`${PREFIX} [WARN]  ${msg}`),
-
-    /**
-     * Logs a debug message — only active when DEBUG=true.
-     * @param {string} msg - The debug message.
-     * @param {*} [data] - Optional data object to pretty-print.
-     */
+    info: (msg) => {
+        console.log(`${PREFIX} [INFO]  ${msg}`);
+        bufferLog('INFO', msg);
+    },
+    error: (msg) => {
+        console.error(`${PREFIX} [ERROR] ${msg}`);
+        bufferLog('ERROR', msg);
+    },
+    warn: (msg) => {
+        console.warn(`${PREFIX} [WARN]  ${msg}`);
+        bufferLog('WARN', msg);
+    },
     debug: (msg, data = null) => {
         if (process.env.DEBUG === 'true') {
             console.debug(`${PREFIX} [DEBUG] ${msg}`);
@@ -43,24 +50,17 @@ const logger = {
                 console.debug(JSON.stringify(data, null, 2));
             }
         }
+        bufferLog('DEBUG', msg, data);
     },
-
-    /**
-     * Logs a CALL event when a function is entered.
-     * @param {string} fnName - The name of the function being entered.
-     * @param {string} [input='none'] - A string representation of the input.
-     */
     call: (fnName, input = 'none') => {
-        console.log(`${PREFIX} [CALL] ${fnName} | input: ${input}`);
+        const msg = `[CALL] ${fnName} | input: ${input}`;
+        console.log(`${PREFIX} ${msg}`);
+        bufferLog('CALL', msg);
     },
-
-    /**
-     * Logs a DONE event when a function exits successfully.
-     * @param {string} fnName - The name of the function that completed.
-     * @param {string} [output='void'] - A string representation of the output.
-     */
     done: (fnName, output = 'void') => {
-        console.log(`${PREFIX} [DONE] ${fnName} | output: ${output}`);
+        const msg = `[DONE] ${fnName} | output: ${output}`;
+        console.log(`${PREFIX} ${msg}`);
+        bufferLog('DONE', msg);
     }
 };
 

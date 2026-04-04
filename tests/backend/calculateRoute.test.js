@@ -2,9 +2,12 @@ const request = require('supertest');
 const app = require('../../modules/backend/index');
 const { calculateRouteGrpc } = require('../../modules/backend/services/grpcClient');
 
-// Mock the gRPC client
+// Mock dependencies
 jest.mock('../../modules/backend/services/grpcClient', () => ({
     calculateRouteGrpc: jest.fn()
+}));
+jest.mock('../../modules/cache/services/osmWorker', () => ({
+    getMapData: jest.fn().mockResolvedValue({ elements: [] }) // Default to empty
 }));
 
 describe('POST /api/routes/calculate', () => {
@@ -69,13 +72,16 @@ describe('POST /api/routes/calculate', () => {
         expect(result.duration).toBe(300);
         expect(result.nodes_expanded).toBe(42);
 
+        // Verify gRPC was called with the 5th map_data argument (empty in this mock case)
         expect(calculateRouteGrpc).toHaveBeenCalledWith(
             { lat: 40.7128, lng: -74.0060 },
             { lat: 40.7306, lng: -73.9866 },
             12,
-            'FASTEST'
+            'FASTEST',
+            '' 
         );
     });
+
     
     it('should return 500 if gRPC client fails', async () => {
         calculateRouteGrpc.mockRejectedValue(new Error('gRPC connection failed'));

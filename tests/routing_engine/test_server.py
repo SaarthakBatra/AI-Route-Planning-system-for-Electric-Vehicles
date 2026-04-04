@@ -137,3 +137,38 @@ def test_objective_comparison(grpc_server):
 
     print(f"\n[DEBUG] Objective Check | Fastest Cost (s): {a_star_fast.path_cost:.1f} | Shortest Cost (m): {a_star_short.path_cost:.1f}")
     assert a_star_fast.path_cost != a_star_short.path_cost
+def test_dynamic_map_data_ingestion(grpc_server):
+    """Verifies that the server can ingest dynamic OSM JSON and route on it."""
+    print("\n[DEBUG] test_dynamic_map_data_ingestion | Input: Mocked OSM JSON")
+    stub = make_stub()
+    
+    # Mock OSM JSON for a simple square (4 nodes, 4 ways)
+    mock_osm = {
+        "elements": [
+            {"type": "node", "id": 1, "lat": 51.500, "lon": -0.100},
+            {"type": "node", "id": 2, "lat": 51.501, "lon": -0.100},
+            {"type": "node", "id": 3, "lat": 51.501, "lon": -0.099},
+            {"type": "node", "id": 4, "lat": 51.500, "lon": -0.099},
+            {"type": "way", "id": 101, "nodes": [1, 2], "tags": {"highway": "primary", "maxspeed": "50"}},
+            {"type": "way", "id": 102, "nodes": [2, 3], "tags": {"highway": "primary", "maxspeed": "50"}},
+            {"type": "way", "id": 103, "nodes": [3, 4], "tags": {"highway": "primary", "maxspeed": "50"}},
+            {"type": "way", "id": 104, "nodes": [4, 1], "tags": {"highway": "primary", "maxspeed": "50"}}
+        ]
+    }
+    
+    req = route_engine_pb2.RouteRequest()
+    req.start.lat, req.start.lng = 51.500, -0.100
+    req.end.lat, req.end.lng = 51.501, -0.099
+    req.mock_hour = 12
+    req.objective = route_engine_pb2.FASTEST
+    req.map_data = json.dumps(mock_osm)
+
+    response = stub.CalculateRoute(req, metadata=META_REAL)
+    
+    assert len(response.results) == 5
+    for res in response.results:
+        # Should find a path in the 4-node square
+        assert len(res.polyline) >= 2
+        print(f" -> Dynamic {res.algorithm}: {len(res.polyline)} nodes")
+
+import json

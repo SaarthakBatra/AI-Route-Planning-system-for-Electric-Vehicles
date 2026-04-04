@@ -1,3 +1,8 @@
+/**
+ * @file routeApi.js
+ * @module backend/routes/routeApi
+ * @description Defines REST routing for pathfinding and algorithm comparison.
+ */
 const express = require('express');
 const router = express.Router();
 const calculateRouteController = require('../controllers/calculateRoute');

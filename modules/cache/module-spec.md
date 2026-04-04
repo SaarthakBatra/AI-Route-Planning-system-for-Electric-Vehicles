@@ -6,59 +6,42 @@
 - As a backend service, I need a Redis client to check for cached routes and avoid redundant computations.
 - As a developer, I need a reliable health-check to ensure the cache layer is operational.
 
-### Acceptance Criteria (Step 3: Dynamic Ingestion)
-- **Status**: ✅ VERIFIED
-- `services/osmWorker.js` implemented using native Node.js `fetch`.
-- Coordinate quantization (4 decimal places) for cache key generation (~11m precision).
-- Custom LRU Eviction using a Redis Sorted Set (`osm_metadata`) to cap cache at `MAX_CACHE_ENTRIES` (default: 1000).
-- Full `highway` tag ingestion from OSM Overpass API.
-- Promise memoization to prevent redundant concurrent fetches for identical bounding boxes.
+### Acceptance Criteria (Quality Guardian Compliance)
+- **Status**: ✅ VERIFIED (2026-04-04)
+- **Dynamic Ingestion**: Implemented using native Node.js `fetch` to eliminate external dependencies.
+- **Quantization**: Forced 4-decimal precision (~11m) for stable cache keys.
+- **LRU Eviction**: Caps cache at `MAX_CACHE_ENTRIES` using Redis ZSET metadata tracking.
+- **Promise Memoization**: Prevents concurrent duplicate fetches for the same area.
 
 ## 2. Design
 
 ### Architecture & Stack
 - **Runtime**: Node.js (v18+)
-- **Client**: `ioredis` (v5+), compatible with Redis and Valkey.
-- **HTTP**: Native Node.js `fetch` (for security and zero-dependency footprint).
-- **Configuration**: `dotenv` driven (`REDIS_HOST`, `REDIS_PORT`, `MAX_CACHE_ENTRIES`).
+- **Client**: `ioredis` (v5+).
+- **Configuration**: Module-level `.env` required.
 
 ### Directory Structure
-- `index.js`: Health-check and diagnostic entry point (Redis + OSM Worker).
-- `services/redisClient.js`: Core Redis connection and utility logic.
-- `services/osmWorker.js`: Dynamic map ingestion, quantization, and caching logic.
-- `utils/logger.js`: Customized module-prefixed logger (`[CACHE]`).
-
-### API Contract (For Other Agents)
-The Cache module provides a unified interface for map data. Other modules should interact primarily with `osmWorker.js`.
-
-```js
-// services/osmWorker.js
-const { getMapData } = require('./services/osmWorker');
-
-/**
- * Fetches or retrieves cached OSM highway data for a bounding box.
- * @param {Object} bbox - Geographical bounds
- * @param {number} bbox.minLat - Minimum Latitude
- * @param {number} bbox.minLon - Minimum Longitude
- * @param {number} bbox.maxLat - Maximum Latitude
- * @param {number} bbox.maxLon - Maximum Longitude
- * @returns {Promise<Object>} - OSM JSON elements (Nodes and Ways)
- */
-const data = await getMapData({ 
-  minLat: 51.500, 
-  minLon: -0.100, 
-  maxLat: 51.501, 
-  maxLon: -0.099 
-});
-```
-
-### Redis Key Schema
-- **Data**: `osm:data:{minLat}:{minLon}:{maxLat}:{maxLon}` (Quantized to 4 decimals).
-- **Metadata (ZSET)**: `osm_metadata` - Stores keys with access timestamps (scores) for LRU eviction.
+- `index.js`: Diagnostic entry point for module health.
+- `services/redisClient.js`: Connection management.
+- `services/osmWorker.js`: Map data lifecycle orchestrator.
+- `utils/logger.js`: Buffered Markdown-compatible logger.
 
 ## 3. Verification
-- **Unit Tests**: 
-    - `tests/cache/redisConnection.test.js`: Verified connection mocking.
-    - `tests/cache/osmWorker.test.js`: Rigorous verification of quantization sensitivity, LRU pruning (ZSET logic), and fetch memoization.
-- **Manual Verification**: `node modules/cache/index.js` outputs a successful end-to-end ingestion trace.
 
+### Automated Tests
+- `npm run lint`: Zero-violation ESLint compliance.
+- `npm test`: Success on all cache and worker test suites.
+
+### Manual Verification
+- `node modules/cache/index.js`: Outputs successful ingestion trace.
+
+## 4. Maintenance (Quality Guardian)
+
+### Refactoring Policy
+- **Thread Safety**: The `ioredis` client is shared across all services. Handle concurrent state within the `osmWorker` scope via the `pendingFetches` map.
+- **Quantization Integrity**: All map ingestion logic must pass through `osmWorker.quantize()` to ensure key consistency.
+
+### Quality Standards
+- 100% ESLint compliance (Single Quotes, 4-space indent).
+- Mandatory JSDoc for all exported functions.
+- Synchronized log synchronization with the global `Output/` directory via the request context.

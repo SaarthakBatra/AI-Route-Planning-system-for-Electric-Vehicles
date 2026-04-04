@@ -1,4 +1,4 @@
-require('dotenv').config({ path: __dirname + '/../../.env' });
+require('dotenv').config({ path: __dirname + '/../.env' });
 
 /**
  * @fileoverview Redis client service for the Cache module.
@@ -22,17 +22,14 @@ logger.info(`Initializing Redis client | host: ${TARGET}`);
 
 /**
  * Shared ioredis client instance.
- * Configured with lazyConnect=true so the connection is controlled explicitly,
- * and maxRetriesPerRequest=1 to fail fast in test environments.
  * @type {import('ioredis').Redis}
  */
 const client = new Redis({
     host: REDIS_HOST,
     port: REDIS_PORT,
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
+    maxRetriesPerRequest: 3
 });
+
 
 // ─── Connection Lifecycle Event Logging ───────────────────────────────────────
 
@@ -53,7 +50,7 @@ client.on('reconnecting', (delay) => {
 });
 
 client.on('close', () => {
-    logger.info(`Redis client connection closed`);
+    logger.info('Redis client connection closed');
 });
 
 // ─── Exported Functions ───────────────────────────────────────────────────────

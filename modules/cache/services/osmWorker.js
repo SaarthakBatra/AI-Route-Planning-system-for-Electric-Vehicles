@@ -1,10 +1,10 @@
-require('dotenv').config({ path: __dirname + '/../../.env' });
+require('dotenv').config({ path: __dirname + '/../.env' });
 const { client } = require('./redisClient');
 const logger = require('../utils/logger');
 
 /**
  * @fileoverview OSM API Worker for dynamic map ingestion and caching.
- * 
+ *
  * Responsibilities:
  *  - Quantize coordinates (4 decimal places) for cache hitting.
  *  - Fetch street data from OSM Overpass API via native fetch.

@@ -1,3 +1,16 @@
+/**
+ * @file index.js
+ * @module backend/entrypoint
+ * @description Server entry point for the AI Route Planner Backend.
+ * Initializes Express middleware, registers routes, and manages lifecycle events.
+ * 
+ * @workflow
+ * 1. Load environment variables from .env.
+ * 2. Setup CORS and JSON body-parsing middleware.
+ * 3. Register request-based logging context middleware.
+ * 4. Mount API routes and health check endpoints.
+ * 5. Start the HTTP server on configured PORT.
+ */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');

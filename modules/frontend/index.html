@@ -41,6 +41,24 @@
                     <div id="end-suggestions" class="suggestions-dropdown hidden"></div>
                 </div>
 
+                <div class="input-row">
+                    <div class="input-group">
+                        <label for="objective-select">Optimization Objective</label>
+                        <select id="objective-select" class="custom-select">
+                            <option value="FASTEST">Fastest Route</option>
+                            <option value="SHORTEST">Shortest Route</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label for="hour-slider">
+                            Departure Hour: <span id="hour-display">12</span>:00
+                            <span class="info-icon" title="Simulates time-dependent traffic conditions (L3 Complexity).">i</span>
+                        </label>
+                        <input type="range" id="hour-slider" min="0" max="23" value="12" class="custom-slider">
+                    </div>
+                </div>
+
                 <div id="status-message" class="status-msg hidden"></div>
 
                 <div id="route-info" class="route-info-panel hidden">
@@ -54,10 +72,13 @@
                     </div>
                 </div>
 
-                <button type="button" id="calc-route-btn" class="primary-btn" disabled>Calculate Route</button>
-                <button type="button" id="reset-btn" class="secondary-btn">Reset</button>
+                <button type="button" id="calc-route-btn" class="primary-btn" disabled>Calculate Comparison Suite</button>
+                <button type="button" id="reset-btn" class="secondary-btn">Reset Map</button>
             </form>
         </div>
+
+        <!-- Glassmorphic Notifications Container -->
+        <div id="notifications-container" class="notifications-container"></div>
     </main>
 
     <!-- Leaflet JS -->

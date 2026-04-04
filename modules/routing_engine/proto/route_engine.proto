@@ -17,6 +17,7 @@ message RouteRequest {
     Coordinate end = 2;
     int32 mock_hour = 3;
     Objective objective = 4;
+    string map_data = 5;
 }
 
 message AlgorithmResult {

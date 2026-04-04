@@ -83,7 +83,7 @@ describe('Database: mongoClient.js', () => {
         const mongoose = require('mongoose');
         mongoose.connect.mockResolvedValue(undefined);
 
-        await expect(connectMongo()).resolves.toBeUndefined();
+        await expect(connectMongo()).resolves.toBe(1);
         expect(mongoose.connect).toHaveBeenCalledTimes(1);
     });
 
