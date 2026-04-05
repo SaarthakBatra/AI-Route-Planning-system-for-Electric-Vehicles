@@ -2,6 +2,12 @@
  * @file bbox.js
  * @module backend/utils/bbox
  * @description Geographical utility for calculating search areas with buffering and 4-decimal precision quantization.
+ * 
+ * @workflow
+ * 1. Receive start and end coordinate objects.
+ * 2. Identify min/max bounds for latitude and longitude.
+ * 3. Apply a degree-based buffer (default: 0.1) to extend the search perimeter.
+ * 4. Quantize results to 4 decimal places for consistent cache keys.
  */
 
 /**
@@ -9,7 +15,7 @@
  * 
  * @param {Object} start - { lat, lng }
  * @param {Object} end - { lat, lng }
- * @param {number} buffer - Degree buffer to extend the box (default: 0.01)
+ * @param {number} buffer - Degree buffer to extend the box (default: 0.1)
  * @returns {Object} - { minLat, minLon, maxLat, maxLon }
  */
 const calculateBBox = (start, end, buffer = 0.1) => {

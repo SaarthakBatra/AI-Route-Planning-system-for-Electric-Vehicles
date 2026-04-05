@@ -2,17 +2,17 @@
  * @file grpcClient.js
  * @module backend/services/grpcClient
  * @description High-performance gRPC client for communication with the Routing Engine.
- * Configures payload limits, shared logging metadata, and dynamic endpoint resolution via env.
+ * Supports binary Protobuf payloads (v2) and standardizes request metadata for tracing.
  * 
  * @workflow
- * 1. Initialize gRPC connection to Routing Engine C++/Python server.
- * 2. Configure maximum message size (Default: 50MB) for OSM JSON payloads.
- * 3. Wrap CalculateRoute call in a Promise for async/await support.
- * 4. Inject Request Context (logDir, logTimestamp) into gRPC metadata.
- * 5. Handle stream-based errors and map response to controller.
+ * 1. Load the RouteService definition from the proto file.
+ * 2. Resolve the target Engine URL from environment variables.
+ * 3. Configure the gRPC client with custom message size limits (Default: 50MB).
+ * 4. Inject Request Context (logDir, logTimestamp) into gRPC metadata for cross-module tracing.
+ * 5. Provide an async wrapper for the CalculateRoute call.
  * 
- * @param {string} ROUTING_ENGINE_URL - Target server address (env: localhost:50051)
- * @param {number} GRPC_MAX_MESSAGE_SIZE - Payload limit (env: 52428800)
+ * @property {string} ROUTING_ENGINE_URL - Target server address (env: localhost:50051)
+ * @property {number} GRPC_MAX_MESSAGE_SIZE - Binary payload limit (env: 52428800)
  */
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
@@ -50,20 +50,24 @@ const client = new route_engine.RouteService(target, grpc.credentials.createInse
  * @param {Object} end - { lat, lng }
  * @param {number} mock_hour - 0-23
  * @param {string} objective - 'FASTEST' | 'SHORTEST'
- * @param {string} map_data - Stringified OSM JSON from cache
+ * @param {Buffer|null} map_data_pb - Binary-serialized MapPayload (v2)
+ * @param {string} region_id - Geographic region identifier for C++ Graph Cache (v2)
+ * @param {string} map_data - Stringified OSM JSON from cache (v1 - Backwards Compatible)
  * @returns {Promise<Object>} The RouteResponse object containing a results array
  */
-const calculateRouteGrpc = (start, end, mock_hour = 12, objective = 'FASTEST', map_data = '') => {
+const calculateRouteGrpc = (start, end, mock_hour = 12, objective = 'FASTEST', map_data_pb = null, region_id = '', map_data = '') => {
     return new Promise((resolve, reject) => {
         const routeRequest = { 
             start, 
             end, 
             mock_hour, 
             objective,
-            map_data
+            map_data,
+            region_id,
+            map_data_pb
         };
         
-        // Step 3: Trigger the full search suite
+        // Step 4: Trigger the full search suite with metadata
         const metadata = new grpc.Metadata();
         metadata.add('use-suite', 'true');
         
@@ -75,7 +79,11 @@ const calculateRouteGrpc = (start, end, mock_hour = 12, objective = 'FASTEST', m
 
         logger.debug('Initiating gRPC CalculateRoute call (Suite Mode)', { 
             target, 
-            request: { ...routeRequest, map_data: map_data ? `${map_data.substring(0, 100)}...` : 'EMPTY' },
+            request: { 
+                ...routeRequest, 
+                map_data: map_data ? `${map_data.substring(0, 50)}...` : 'EMPTY',
+                map_data_pb: map_data_pb ? `BINARY(${map_data_pb.length} bytes)` : 'EMPTY'
+            },
             metadata: metadata.getMap() 
         });
 

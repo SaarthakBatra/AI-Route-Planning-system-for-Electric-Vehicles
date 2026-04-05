@@ -58,14 +58,35 @@ sequenceDiagram
 | **Toast Overflow** | 5 large notifications covered the entire map on mobile devices. | Implemented **Auto-Minimization** after 60s and a compact 40px view. |
 | **DOM Node Leak** | Resetting the map didn't destroy previous event listeners. | Centralized event management and used `.off()` for Leaflet events. |
 
-## 4. 🚀 Quick Start
+## 4. Recent Updates (v1.3.0)
 
-1. Install dependencies (for linting):
-   ```bash
-   npm install
-   ```
-2. Open `index.html` in your browser.
-3. Ensure the Backend module is running on `http://localhost:3000`.
+### 4.1 Configuration (Environment Aware)
+The v1.3.0 update introduces **Dynamic API Discovery** to support hybrid development (e.g., serving the frontend from VS Code Live Server on port 5500 while the backend runs on port 3000).
+
+- **`apiBaseUrl`**: Automatically detected in `app.js`. 
+  - *Local Dev*: Targets `http://localhost:3000` by default.
+  - *Production*: Reverts to an empty string for relative pathing.
+- **How to change the Backend Port**:
+  If your backend is running on a different port (e.g., 4000), update the `apiBaseUrl` line in the `appConfig` object within `modules/frontend/app.js`:
+  ```javascript
+  apiBaseUrl: 'http://localhost:4000',
+  ```
+- **`defaultTheme`**: Set the initial map style via `mapConfig.defaultTheme` in `app.js`.
+  - Options: `'light'`, `'dark'`, `'satellite'`.
+  - Default: `'light'`.
+
+### 4.2 Core Modules
+-   **Config Standardization**: All API and Tile endpoints are centralized in the `appConfig` and `mapConfig` objects.
+-   **Deduplicated Logic**: Nominatim API calls share a private `_fetchNominatim` helper to prevent code rot.
+-   **Enhanced Error Feedback**: Standardized detection of "Limit Exceeded" and "No Path Found" states based on backend results (`distance: 0`, `cost: 0`, `circuit_breaker_triggered`).
+-   **Responsive Interaction**: Hover-syncing between toast cards and map polylines for high-fidelity comparison.
+
+### 4.3 Failure Signatures & UX
+| State | Indicator | Backend Signal | UI Behavior |
+| :--- | :--- | :--- | :--- |
+| **SUCCESS** | Green Polyline | `distance > 0` | Displays metrics (Time/Dist) and full path. |
+| **LIMIT EXCEEDED** | Red Toast + Badge | `breaker_triggered: true` | Metric values replaced with `---`. |
+| **NO PATH FOUND** | Orange Toast + Badge | `dist: 0, cost: 0` | Signifies unreachable destination in valid map. |
 
 ## 5. 🏗️ Features
 
@@ -73,6 +94,7 @@ sequenceDiagram
 - **Pixel-Perfect Bundling**: Visualizes overlapping routes as distinct stacked paths.
 - **Interaction Hover**: Hovering a performance card highlights the specific path on the map.
 - **Smart Search**: Autocomplete suggestions via Nominatim with intelligent debouncing.
+- **Circuit Breaker Visualization**: Intelligent UI feedback (badges and failure styling) for search limit exceeded states.
 - **Multi-Theme Support**: Toggle between Dark, Light, and Satellite imagery on the fly.
 
 ## 6. 🛠️ Tech Stack

@@ -19,9 +19,15 @@ struct AlgorithmResult {
     bool circuit_breaker_triggered;
 };
 
+int get_graph_cache_size();
+bool is_region_cached(const std::string& region_id);
+void clear_graph_cache_for_testing();
+
 std::vector<AlgorithmResult> calculate_all_routes(
     double start_lat, double start_lng, double end_lat, double end_lng, 
     int mock_hour, int objective_val, bool algo_debug = false,
+    const std::string& region_id = "",
+    bool cache_evict = false,
     const std::vector<std::tuple<int, double, double, std::string>>& dyn_nodes = {},
     const std::vector<std::tuple<int, int, double, int, std::string>>& dyn_edges = {},
     int max_nodes = 1000000,
@@ -32,7 +38,13 @@ std::vector<AlgorithmResult> calculate_all_routes(
 std::vector<std::pair<double, double>> calculate_dummy_route(double start_lat, double start_lng, double end_lat, double end_lng);
 
 PYBIND11_MODULE(route_core, m) {
-    m.doc() = "C++ Core engine for AI Route Planner utilizing pybind11 bridge";
+    m.doc() = R"pbdoc(
+        AI Route Planner Core Engine
+        ----------------------------
+        High-performance pathfinding implementation in C++17.
+        Provides parallel execution of BFS, Dijkstra, IDDFS, A*, and IDA*.
+        Includes LRU Graph Caching and Island Detection.
+    )pbdoc";
     
     // Bind the AlgorithmResult struct
     py::class_<AlgorithmResult>(m, "AlgorithmResult")
@@ -53,12 +65,19 @@ PYBIND11_MODULE(route_core, m) {
           py::arg("end_lat"), py::arg("end_lng"),
           py::arg("mock_hour"), py::arg("objective_val"),
           py::arg("algo_debug") = false,
+          py::arg("region_id") = std::string(""),
+          py::arg("cache_evict") = false,
           py::arg("dyn_nodes") = std::vector<std::tuple<int, double, double, std::string>>(),
           py::arg("dyn_edges") = std::vector<std::tuple<int, int, double, int, std::string>>(),
           py::arg("max_nodes") = 1000000,
           py::arg("banding_shortest") = 1.0,
           py::arg("banding_fastest") = 0.1,
           py::arg("epsilon_min") = 10.0);
+
+    // Bind cache utility functions
+    m.def("get_graph_cache_size", &get_graph_cache_size, "Returns the current number of cached graphs");
+    m.def("is_region_cached", &is_region_cached, py::arg("region_id"), "Checks if a region is cached");
+    m.def("clear_graph_cache_for_testing", &clear_graph_cache_for_testing, "Clears the cache for testing purposes");
 
     // Bind legacy function for debug-mode
     m.def("calculate_dummy_route", &calculate_dummy_route, 

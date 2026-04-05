@@ -1,10 +1,15 @@
 /**
- * @fileoverview Request-context-aware logger for the Cache module.
+ * @fileoverview Request-Context-Aware Logger for the Cache module.
  *
- * Features:
- *  - Categorized logging (INFO, WARN, ERROR, CALL, DONE).
- *  - Automatic request-buffer synchronization for log flushing.
+ * Workflow:
+ *  1. Context Retrieval: Uses `AsyncLocalStorage` from the backend to isolate logs per request.
+ *  2. Multi-Channel Output:
+ *      a. Console: Real-time stdout/stderr for immediate debugging.
+ *      b. Markdown Buffer: Pushes formatted log strings to `store.cacheBuffer` for final 
+ *         web UI / artifact generation (traceability).
+ *  3. Verbose Safety: `debug()` only outputs to the console if `process.env.DEBUG` is 'true'.
  */
+
 const { storage } = require('../../backend/utils/context');
 
 const PREFIX = '[CACHE]';
@@ -31,18 +36,36 @@ const bufferLog = (level, msg, data = null) => {
  * Core logger object with buffered Markdown synchronization.
  */
 const logger = {
+    /**
+     * Logs informational messages.
+     * @param {string} msg 
+     */
     info: (msg) => {
         console.log(`${PREFIX} [INFO]  ${msg}`);
         bufferLog('INFO', msg);
     },
+    /**
+     * Logs error messages.
+     * @param {string} msg 
+     */
     error: (msg) => {
         console.error(`${PREFIX} [ERROR] ${msg}`);
         bufferLog('ERROR', msg);
     },
+    /**
+     * Logs warning messages.
+     * @param {string} msg 
+     */
     warn: (msg) => {
         console.warn(`${PREFIX} [WARN]  ${msg}`);
         bufferLog('WARN', msg);
     },
+    /**
+     * Logs debug messages, optionally with data.
+     * Only outputs to console if process.env.DEBUG is 'true'.
+     * @param {string} msg 
+     * @param {any} [data] 
+     */
     debug: (msg, data = null) => {
         if (process.env.DEBUG === 'true') {
             console.debug(`${PREFIX} [DEBUG] ${msg}`);
@@ -52,11 +75,21 @@ const logger = {
         }
         bufferLog('DEBUG', msg, data);
     },
+    /**
+     * Logs the entry of a function call.
+     * @param {string} fnName 
+     * @param {string} [input='none'] 
+     */
     call: (fnName, input = 'none') => {
         const msg = `[CALL] ${fnName} | input: ${input}`;
         console.log(`${PREFIX} ${msg}`);
         bufferLog('CALL', msg);
     },
+    /**
+     * Logs the successful completion of a function.
+     * @param {string} fnName 
+     * @param {string} [output='void'] 
+     */
     done: (fnName, output = 'void') => {
         const msg = `[DONE] ${fnName} | output: ${output}`;
         console.log(`${PREFIX} ${msg}`);

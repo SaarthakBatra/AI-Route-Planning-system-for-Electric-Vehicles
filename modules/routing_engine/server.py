@@ -4,15 +4,26 @@ Routing Engine gRPC Server
 This module serves as the gRPC interface for the AI Route Planner core.
 It handles:
 1. gRPC request orchestration (RouteService).
-2. Dynamic OSM map data ingestion and quantization.
-3. Thread-safe log buffering and emergency flushing.
-4. Bridging Python requests to the C++ pybind11 'route_core' engine.
+2. Dynamic OSM map data ingestion and high-speed quantization.
+3. Thread-safe log buffering and emergency flushing for crash recovery.
+4. Bridging Python requests to the C++ 'route_core' engine via pybind11.
 
-Workflow:
-1. Receive gRPC RouteRequest.
-2. If map_data is present, parse OSM elements and map to internal IDs.
-3. Forward request parameters (coords, objective, map) to C++.
-4. Return AlgorithmResults (5 parallel searches) to the orchestrator.
+--- CONFIGURATION ---
+The server reads the following environment variables:
+- ROUTING_MAX_NODES: Expansion circuit breaker (Default: 1,000,000).
+- GRAPH_CACHE_MAX_SIZE: LRU graph cache capacity (Default: 20).
+- GRPC_MAX_MESSAGE_SIZE: Payload limit in bytes (Default: 100MB).
+- LOG_FLUSH_INTERVAL: Background flush frequency in seconds
+  (Default: 0/disabled).
+- ALGO_DEBUG: Enables step-by-step markdown tracing in Output/
+  (Default: false).
+
+--- WORKFLOW ---
+1. gRPC CalculateRoute called with start/end coordinates.
+2. Map data provided as byte-serialized Protobuf (Fast Path) or JSON (Legacy).
+3. Map quantized to internal index-based graph representation.
+4. C++ Engine executes 5 searches in parallel using std::async.
+5. Standardized results (or Failure Signatures) returned to orchestrator.
 """
 import sys
 import os
@@ -188,15 +199,65 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
         end = request.end
         mock_hour = request.mock_hour
         obj_val = request.objective  # 0: FASTEST, 1: SHORTEST
-        map_data_str = getattr(request, 'map_data', "")
 
-        # Handle Map Ingestion
+        region_id = getattr(request, 'region_id', "")
+        map_data_pb = getattr(request, 'map_data_pb', b"")
+        map_data_str = getattr(request, 'map_data', "")
+        cache_evict = (
+            request_metadata.get('cache-evict', '').lower() == 'true'
+        )
+
+        # ── Map Ingestion: Dual-Path (PB/JSON Fallback) ──────────
+
         dyn_nodes = []
         dyn_edges = []
-        if map_data_str:
+
+        if map_data_pb:
+            # PRIORITY 1 — FAST PATH (v2): Binary MapPayload protobuf
+            try:
+                payload = route_engine_pb2.MapPayload()
+                payload.ParseFromString(map_data_pb)
+                size_kb = len(map_data_pb) / 1024
+
+                msg = (
+                    f"[CACHE_V2] Binary MapPayload received | "
+                    f"Nodes: {len(payload.nodes)} | "
+                    f"Edges: {len(payload.edges)} | "
+                    f"Size: {size_kb:.1f}KB | Region: '{region_id}'"
+                )
+                logging.info(f"[ROUTING_ENGINE] [INFO] {msg}")
+                add_to_buffer("INFO", msg)
+
+                for n in payload.nodes:
+                    dyn_nodes.append((n.id, n.lat, n.lng, n.name))
+                for e in payload.edges:
+                    dyn_edges.append(
+                        (e.u, e.v, e.weight_m, e.speed_kmh, e.road_type)
+                    )
+                    dyn_edges.append(
+                        (e.v, e.u, e.weight_m, e.speed_kmh, e.road_type)
+                    )
+            except Exception as e:
+                err = f"MapPayload deserialization failed: {str(e)}"
+                logging.error(f"[ROUTING_ENGINE] [ERROR] {err}")
+                add_to_buffer("ERROR", err)
+
+        elif map_data_str:
+            # PRIORITY 2 — @deprecated DEPRECATED FALLBACK (v1)
+            # This path is maintained for backward compatibility.
+            warn_msg = (
+                "[CACHE_V1] JSON string map_data used. @deprecated. "
+                "Upgrade Cache module to send map_data_pb bytes "
+                "for better performance."
+            )
+            logging.warning(f"[ROUTING_ENGINE] [WARN] {warn_msg}")
+            add_to_buffer("WARN", warn_msg)
             try:
                 size_kb = len(map_data_str.encode('utf-8')) / 1024
-                msg = f"Map Ingestion Triggered | Ingested: {size_kb:.1f}KB"
+                msg = (
+                    f"Map Ingestion (JSON) Triggered | "
+                    f"Ingested: {size_kb:.1f}KB"
+                )
                 logging.info(f"[ROUTING_ENGINE] [INFO] {msg}")
                 add_to_buffer("INFO", msg)
 
@@ -246,7 +307,7 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
                 dyn_edges = edge_list
 
             except Exception as e:
-                err_msg = f"Map Ingestion Failed: {str(e)}"
+                err_msg = f"Map Ingestion (JSON) Failed: {str(e)}"
                 logging.error(f"[ROUTING_ENGINE] [ERROR] {err_msg}")
                 add_to_buffer("ERROR", err_msg)
 
@@ -283,6 +344,14 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
         logging.info(f"[DEBUG] RouteService.CalculateRoute | {status_msg}")
         add_to_buffer("DEBUG", status_msg)
 
+        if cache_evict:
+            evict_msg = (
+                "[CACHE] Manual cache eviction triggered "
+                "via metadata 'cache-evict: true'"
+            )
+            logging.info(f"[ROUTING_ENGINE] [INFO] {evict_msg}")
+            add_to_buffer("INFO", evict_msg)
+
         try:
             response = route_engine_pb2.RouteResponse()
 
@@ -298,7 +367,9 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
             else:
                 cpp_results = route_core.calculate_all_routes(
                     start.lat, start.lng, end.lat, end.lng, mock_hour,
-                    int(obj_val), is_algo_debug, dyn_nodes, dyn_edges,
+                    int(obj_val), is_algo_debug,
+                    region_id, cache_evict,
+                    dyn_nodes, dyn_edges,
                     max_nodes, banding_shortest, banding_fastest, epsilon_min
                 )
 
@@ -313,6 +384,10 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
                     algo_res.nodes_expanded = res.nodes_expanded
                     algo_res.exec_time_ms = res.exec_time_ms
                     algo_res.path_cost = res.path_cost
+                    algo_res.debug_logs = res.debug_logs
+                    algo_res.circuit_breaker_triggered = (
+                        res.circuit_breaker_triggered
+                    )
                     for lat, lng in res.path:
                         coord = algo_res.polyline.add()
                         coord.lat, coord.lng = lat, lng
@@ -320,10 +395,11 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
             add_to_buffer("INFO", "Calculated Route Response Ready")
             return response
         except Exception as e:
-            logging.error(f"[DEBUG] Internal Failure: {str(e)}")
-            add_to_buffer("ERROR", f"Internal Failure: {str(e)}")
+            err_msg = f"Internal Failure: {str(e)}"
+            logging.error(f"[ROUTING_ENGINE] [CRITICAL] {err_msg}")
+            add_to_buffer("ERROR", err_msg)
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(e))
+            context.set_details(err_msg)
             return route_engine_pb2.RouteResponse()
         finally:
             with active_lock:
@@ -373,9 +449,12 @@ def serve():
 
     server.add_insecure_port('[::]:50051')
     server.start()
+
+    cache_max_size = int(os.getenv('GRAPH_CACHE_MAX_SIZE', '20'))
     logging.info(
         f"[DEBUG] Python gRPC Server | Status: Listening on 50051 | "
-        f"Max Message: {max_msg_size / 1024 / 1024:.0f}MB"
+        f"Max Message: {max_msg_size / 1024 / 1024:.0f}MB | "
+        f"Graph Cache Max Size: {cache_max_size}"
     )
 
     if int(os.getenv('LOG_FLUSH_INTERVAL', '0')) > 0:

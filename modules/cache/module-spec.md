@@ -7,11 +7,13 @@
 - As a developer, I need a reliable health-check to ensure the cache layer is operational.
 
 ### Acceptance Criteria (Quality Guardian Compliance)
-- **Status**: ✅ VERIFIED (2026-04-04)
-- **Dynamic Ingestion**: Implemented using native Node.js `fetch` to eliminate external dependencies.
-- **Quantization**: Forced 4-decimal precision (~11m) for stable cache keys.
-- **LRU Eviction**: Caps cache at `MAX_CACHE_ENTRIES` using Redis ZSET metadata tracking.
-- **Promise Memoization**: Prevents concurrent duplicate fetches for the same area.
+- 11. **Standardized Failure Responses**: If the Overpass API returns zero elements or fails after exhausted retries, the module returns a valid, empty `MapPayload` (0 nodes/edges) instead of throwing. This prevents cascading 500 errors in the Backend.
+- 12. **Weight Safety & Fallbacks**: Ensures `weight_m` is always a finite positive number (defaults to `1.0` if calculation fails) to prevent routing engine pathologies.
+- 13. **Binary Keying**: Uses `osm:pb:` prefix for binary payloads to ensure Routing Engine v2.0 compatibility.
+- 14. **LRU Eviction**: Caps cache at `MAX_CACHE_ENTRIES` using Redis ZSET metadata tracking (`osm_metadata`). Eviction is triggered when the ZSET cardinality exceeds the limit, removing the entry with the lowest score (oldest timestamp).
+- 15. **Promise Memoization**: Prevents concurrent duplicate fetches for the same area using an in-memory `pendingFetches` map.
+- 16. **API Robustness**: Implements exponential backoff (starting at 2s, doubling per retry) and client-side timeouts (via `AbortController`) for Overpass API requests.
+- 17. **Refactored Cache-Aside**: Uses a shared HOF (`withCacheAside`) to unify JSON and Protobuf codepaths, ensuring consistent LRU and memoization behavior.
 
 ## 2. Design
 
@@ -23,7 +25,8 @@
 ### Directory Structure
 - `index.js`: Diagnostic entry point for module health.
 - `services/redisClient.js`: Connection management.
-- `services/osmWorker.js`: Map data lifecycle orchestrator.
+- `services/osmWorker.js`: Map data lifecycle and Protobuf orchestration.
+- `utils/haversine.js`: Geographic distance utility.
 - `utils/logger.js`: Buffered Markdown-compatible logger.
 
 ## 3. Verification
@@ -45,3 +48,22 @@
 - 100% ESLint compliance (Single Quotes, 4-space indent).
 - Mandatory JSDoc for all exported functions.
 - Synchronized log synchronization with the global `Output/` directory via the request context.
+### 5. The War Room (Bugs Faced & Solved)
+
+#### 5.1 The Anonymous Node Syndrome
+**Issue**: Missing node names in algorithm logs (BFS/Dijkstra) made debugging difficult.
+- **Root Cause**: Overpass query optimization (`out skel`) stripped all node tags, and the conversion logic only checked for `el.tags?.name`.
+- **Resolution**: Updated `fetchMapData` to use `out qt` for nodes to fetch tags.
+- **Inheritance Logic**: Implemented way-name propagation where a node without its own `name` tag inherits the name of its parent `way`. Ensures logs display "(Main Street)" correctly.
+
+#### 5.2 The 504 Gateway Timeout Crisis
+**Issue**: High traffic or complex queries on the Overpass API resulted in 504 Gateway Timeouts, stalling the map ingestion pipeline.
+- **Root Cause**: Lack of client-side timeouts and retry logic; queries were not optimized for server-side processing limits.
+- **Resolution**:
+    - **Server-Side Hinting**: Added `[timeout:25]` to all Overpass QL queries.
+    - **Client-Side Guard**: Implemented `AbortController` with a configurable `OSM_TIMEOUT_MS` (default 30s).
+    - **Resilience**: Added exponential backoff retry logic (starting at 2s, doubling) for 503/504 status codes, controlled by `OSM_REQ_RETRY_COUNT`.
+#### 5.4 The "Ocean" Problem (Empty Responses)
+**Issue**: Requests in regions with no roads caused the gRPC layer to fail or throw errors due to empty data elements.
+- **Resolution**: Implemented **Standardized Failure Responses**. If the Overpass API returns no data, the `convertToMapPayload` function creates a valid empty Protobuf structure.
+- **Benefit**: The Routing Engine receives a valid graph (with zero size) and returns a clean "Path Not Found" result instead of a system crash.

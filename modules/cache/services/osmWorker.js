@@ -1,22 +1,56 @@
-require('dotenv').config({ path: __dirname + '/../.env' });
+// AI Route Planner - Cache Module - v2.0.1 (Cache-Bust Fix)
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const protobuf = require('protobufjs');
 const { client } = require('./redisClient');
 const logger = require('../utils/logger');
+const { calculateHaversine } = require('../utils/haversine');
 
 /**
- * @fileoverview OSM API Worker for dynamic map ingestion and caching.
+ * @fileoverview OSM API Worker for dynamic map ingestion, Protobuf conversion, and caching.
  *
- * Responsibilities:
- *  - Quantize coordinates (4 decimal places) for cache hitting.
- *  - Fetch street data from OSM Overpass API via native fetch.
- *  - Implement Custom LRU Eviction using a Redis Sorted Set (ZSET).
- *  - Prevent redundant concurrent fetches via Promise memoization.
+ * Workflow:
+ *  1. Quantize coordinates (4 decimal places) for cache hitting and region identification.
+ *  2. Check Redis for existing binary (Protobuf) or JSON data under region-specific keys.
+ *  3. Handle Cache Miss:
+ *      a. Check in-memory `pendingFetches` to prevent duplicate concurrent API calls.
+ *      b. Fetch street data from OSM Overpass API with exponential backoff and timeouts.
+ *      c. Convert OSM JSON to binary-serialized MapPayload Protobuf messages.
+ *      d. Pre-calculate edge weights (meters) using the Haversine formula and map speeds.
+ *      e. Propagate way-names to nodes for enhanced logging diagnostics.
+ *  4. Persistence & LRU:
+ *      a. Store results in Redis and update the `osm_metadata` ZSET with access timestamps.
+ *      b. Evict the oldest entry if `MAX_CACHE_ENTRIES` is exceeded.
  */
 
 const MAX_CACHE_ENTRIES = parseInt(process.env.MAX_CACHE_ENTRIES, 10) || 1000;
+const OSM_TIMEOUT_MS = parseInt(process.env.OSM_TIMEOUT_MS, 10) || 30000;
+const OSM_REQ_RETRY_COUNT = parseInt(process.env.OSM_REQ_RETRY_COUNT, 10) || 3;
 const METADATA_KEY = 'osm_metadata';
+const PROTO_PATH = path.resolve(__dirname, '../../routing_engine/proto/route_engine.proto');
+
+/**
+ * Helper to delay execution (ms).
+ * @param {number} ms 
+ * @returns {Promise<void>}
+ */
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // In-memory memoization to prevent concurrent fetches for the same bbox
 const pendingFetches = new Map();
+
+// Default speeds for road types when maxspeed tag is missing (km/h)
+const HIGHWAY_SPEEDS = {
+    'motorway': 120,
+    'trunk': 100,
+    'primary': 80,
+    'secondary': 60,
+    'tertiary': 40,
+    'unclassified': 30,
+    'residential': 30,
+    'service': 20,
+    'living_street': 20
+};
 
 /**
  * Quantize a coordinate to 4 decimal places (~11m precision).
@@ -26,131 +60,351 @@ const pendingFetches = new Map();
 const quantize = (val) => parseFloat(Number(val).toFixed(4));
 
 /**
- * Generates a consistent Redis key for a bounding box.
+ * Generates a consistent region identifier for a bounding box.
+ * Format: bbox:lat_min_lng_min_lat_max_lng_max
  * @param {Object} bbox - { minLat, minLon, maxLat, maxLon }
  * @returns {string}
  */
-const getBBoxKey = (bbox) => {
+const getRegionId = (bbox) => {
     const minLat = quantize(bbox.minLat);
     const minLon = quantize(bbox.minLon);
     const maxLat = quantize(bbox.maxLat);
     const maxLon = quantize(bbox.maxLon);
-    return `osm:data:${minLat}:${minLon}:${maxLat}:${maxLon}`;
+    return `bbox:${minLat}_${minLon}_${maxLat}_${maxLon}`;
 };
 
 /**
- * Fetches map data from OSM Overpass API.
- * Uses native fetch as per security requirements.
- * @param {Object} bbox
+ * Converts OSM JSON elements into a binary MapPayload Protobuf.
+ * Maps OSM IDs to sequential internal int32 IDs as required by the proto.
+ * 
+ * Workflow:
+ *  1. Filters and maps nodes to sequential internal IDs.
+ *  2. Extracts names from node tags or way tags (inheritance).
+ *  3. Calculates Haversine distances for edge weights.
+ *  4. Maps highway tags to speed limits from HIGHWAY_SPEEDS.
+ *  5. Verifies and encodes the final Protobuf buffer.
+ *
+ * @param {Object} osmData - Raw JSON from Overpass API.
+ * @returns {Promise<Buffer>} Binary serialized MapPayload.
  */
-const fetchMapData = async (bbox) => {
-    const { minLat, minLon, maxLat, maxLon } = bbox;
-    // Query fetches all highway ways and their associated nodes
-    const query = `[out:json];(way["highway"](${minLat},${minLon},${maxLat},${maxLon}););out body;>;out skel qt;`;
-    const url = 'https://overpass-api.de/api/interpreter';
+const convertToMapPayload = async (osmData) => {
+    const root = await protobuf.load(PROTO_PATH);
+    const MapPayload = root.lookupType('route_engine.MapPayload');
+    const EdgeProto = root.lookupType('route_engine.EdgeProto');
+    const NodeProto = root.lookupType('route_engine.NodeProto');
     
-    logger.info(`Fetching OSM data from Overpass | bbox: ${minLat},${minLon},${maxLat},${maxLon}`);
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            body: 'data=' + encodeURIComponent(query),
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
-        
-        if (!response.ok) {
-            throw new Error(`OSM API error: ${response.status} ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        logger.info(`OSM Data Received | elements: ${data.elements?.length || 0}`);
-        return data;
-    } catch (err) {
-        logger.error(`OSM Fetch Failed | error: ${err.message}`);
-        throw err;
+    // Standardized Empty Response: Return a valid empty payload if no elements exist
+    if (!osmData || !osmData.elements || osmData.elements.length === 0) {
+        const emptyPayload = MapPayload.create({ nodes: [], edges: [] });
+        return MapPayload.encode(emptyPayload).finish();
     }
+
+    const nodesById = new Map();
+    const osmToInternal = new Map();
+    const nodesProto = [];
+    const edgesProto = [];
+    let internalIdCounter = 0;
+
+    // 1. Process Nodes
+    osmData.elements.forEach(el => {
+        if (el.type === 'node') {
+            const internalId = internalIdCounter++;
+            
+            // Priority: name > name:en > int_name > alt_name
+            const rawName = el.tags?.name || el.tags?.['name:en'] || el.tags?.int_name || el.tags?.alt_name || '';
+            
+            const node = NodeProto.create({
+                id: internalId,
+                lat: el.lat,
+                lng: el.lon,
+                name: rawName
+            });
+            osmToInternal.set(el.id, internalId);
+            nodesById.set(el.id, node);
+            nodesProto.push(node);
+        }
+    });
+
+    /**
+     * Helper to validate node coordinates before distance calculation.
+     * @param {Object} node 
+     * @returns {boolean}
+     */
+    const isValidCoord = (node) => node && Number.isFinite(node.lat) && Number.isFinite(node.lng);
+
+    // 2. Process Ways into Edges
+    osmData.elements.forEach(el => {
+        if (el.type === 'way' && el.nodes) {
+            const highway = el.tags?.highway;
+            if (!highway) return;
+
+            // Name Propogation: If nodes on this way have no name, assign them the way's name
+            const wayName = el.tags?.name || el.tags?.['name:en'];
+            if (wayName) {
+                el.nodes.forEach(nodeId => {
+                    const node = nodesById.get(nodeId);
+                    if (node && !node.name) {
+                        node.name = wayName;
+                    }
+                });
+            }
+
+            // Priority: maxspeed tag > highway type default > global default (30)
+            const maxSpeedTag = el.tags?.maxspeed;
+            const speed_kmh = Number(parseInt(maxSpeedTag) || HIGHWAY_SPEEDS[highway] || 30);
+            const road_type = highway;
+
+            for (let i = 0; i < el.nodes.length - 1; i++) {
+                const uId = el.nodes[i];
+                const vId = el.nodes[i + 1];
+
+                const u = nodesById.get(uId);
+                const v = nodesById.get(vId);
+
+                if (u && v) {
+                    let weight_m = 1.0; 
+                    
+                    if (isValidCoord(u) && isValidCoord(v)) {
+                        const dist = calculateHaversine(u.lat, u.lng, v.lat, v.lng);
+                        if (Number.isFinite(dist) && dist > 0) {
+                            weight_m = dist;
+                        }
+                    }
+
+                    edgesProto.push(EdgeProto.create({
+                        u: osmToInternal.get(uId),
+                        v: osmToInternal.get(vId),
+                        weightM: weight_m,
+                        speedKmh: speed_kmh,
+                        roadType: road_type
+                    }));
+                }
+            }
+        }
+    });
+
+    const payload = MapPayload.create({
+        nodes: nodesProto,
+        edges: edgesProto
+    });
+
+    // --- Integrity Checks ---
+    if (nodesProto.length === 0) {
+        // Return valid empty payload rather than throwing, satisfying Standardized Failure Protocol
+        return MapPayload.encode(payload).finish();
+    }
+    
+    // Validate edge indices against nodes array
+    edgesProto.forEach((edge, index) => {
+        if (edge.u >= nodesProto.length || edge.v >= nodesProto.length) {
+            throw new Error(`Integrity violation: Edge ${index} refers to out-of-bounds node index.`);
+        }
+    });
+
+    const errMsg = MapPayload.verify(payload);
+    if (errMsg) throw Error(errMsg);
+
+    return MapPayload.encode(payload).finish();
 };
 
 /**
- * Main orchestrator for getting map data (Cache-Aside + LRU).
+ * Internal Cache-Aside orchestrator. Handles Hit/Miss, Pending fetches, and LRU Updates.
  * 
- * Logic:
- * 1. Check Redis for Cached Data.
- * 2. On HIT: Update access timestamp in ZSET and return.
- * 3. On MISS: 
- *    - Check for pending fetches (Promise memoization).
- *    - Ingest from OSM Overpass API.
- *    - Store in Redis and update ZSET.
- *    - Perform LRU Eviction Check (remove oldest if count > MAX).
+ * Logic sequence:
+ *  1. Check Redis for existing data.
+ *  2. Check `pendingFetches` for in-flight requests for the same key.
+ *  3. Fetch/Transform via providing processing callback.
+ *  4. Persist result and update LRU.
  * 
- * @param {Object} bbox - { minLat, minLon, maxLat, maxLon }
- * @returns {Promise<Object>} The OSM JSON data.
+ * @param {string} key - Redis key (prefixed).
+ * @param {Function} fetchFn - Async callback to run on miss.
+ * @param {boolean} isBinary - Whether to use getBuffer/set instead of get/set.
+ * @param {string} [callerName] - Name of the function for logging.
+ * @returns {Promise<any>} The data (Buffer or JSON).
  */
-const getMapData = async (bbox) => {
-    const key = getBBoxKey(bbox);
-    logger.call('getMapData', `key: ${key}`);
-
+const withCacheAside = async (key, fetchFn, isBinary = false, callerName = 'withCacheAside') => {
     try {
-        // 1. Check Redis for Cached Data
-        const cachedData = await client.get(key);
-        if (cachedData) {
-            logger.info(`Cache HIT | key: ${key}`);
-            // Update access timestamp for LRU priority
+        // 1. Redis Hit
+        const cached = isBinary ? await client.getBuffer(key) : await client.get(key);
+        if (cached) {
+            logger.info(`Cache HIT [${isBinary ? 'PB' : 'JSON'}] | key: ${key}`);
             await client.zadd(METADATA_KEY, Date.now(), key);
-            logger.done('getMapData', 'HIT');
-            return JSON.parse(cachedData);
+            if (callerName) logger.done(callerName, 'HIT');
+            return isBinary ? cached : JSON.parse(cached);
         }
 
-        // 2. Cache MISS
-        logger.info(`Cache MISS | key: ${key}`);
-        
-        // 3. Prevent Concurrent Re-Fetches
+        // 2. Pending Fetch Check (Deduplication)
         if (pendingFetches.has(key)) {
             logger.info(`Attaching to pending fetch | key: ${key}`);
             return await pendingFetches.get(key);
         }
 
-        // 4. Ingest and Cache
-        const fetchPromise = (async () => {
+        // 3. Cache Miss - Execute Fetch
+        const workPromise = (async () => {
             try {
-                const data = await fetchMapData(bbox);
+                const result = await fetchFn();
                 
-                // Store data
-                await client.set(key, JSON.stringify(data));
-                // Track metadata (access timestamp)
+                // Store in Redis
+                if (isBinary) {
+                    await client.set(key, result);
+                } else {
+                    await client.set(key, JSON.stringify(result));
+                }
                 await client.zadd(METADATA_KEY, Date.now(), key);
                 
-                // 5. LRU Eviction Check
+                // LRU Eviction
                 const count = await client.zcard(METADATA_KEY);
                 if (count > MAX_CACHE_ENTRIES) {
-                    const oldestKeys = await client.zrange(METADATA_KEY, 0, 0);
-                    if (oldestKeys.length > 0) {
-                        const oldestKey = oldestKeys[0];
-                        logger.info(`Evicting oldest entry | key: ${oldestKey}`);
-                        await client.del(oldestKey);
-                        await client.zrem(METADATA_KEY, oldestKey);
+                    const oldest = await client.zrange(METADATA_KEY, 0, 0);
+                    if (oldest.length > 0) {
+                        logger.info(`Evicting oldest entry | key: ${oldest[0]}`);
+                        await client.del(oldest[0]);
+                        await client.zrem(METADATA_KEY, oldest[0]);
                     }
                 }
-
-                return data;
+                return result;
             } finally {
                 pendingFetches.delete(key);
             }
         })();
 
-        pendingFetches.set(key, fetchPromise);
-        const result = await fetchPromise;
-        logger.done('getMapData', 'INGESTED');
-        return result;
+        pendingFetches.set(key, workPromise);
+        return await workPromise;
+    } catch (err) {
+        logger.error(`withCacheAside failed | key: ${key} | error: ${err.message}`);
+        throw err;
+    }
+};
 
+/**
+ * Retrieves raw OSM JSON elements for a bounding box (Legacy Support).
+ * Satisfies existing unit tests and backward compatibility.
+ * 
+ * @param {Object} bbox - Bounding box { minLat, minLon, maxLat, maxLon }.
+ * @returns {Promise<Object>} Raw OSM JSON elements.
+ */
+const getMapData = async (bbox) => {
+    const regionId = getRegionId(bbox);
+    const key = `osm:data:${regionId.replace('bbox:', '')}`;
+    logger.call('getMapData', `key: ${key}`);
+    
+    try {
+        return await withCacheAside(key, async () => {
+            const data = await fetchMapData(bbox);
+            logger.done('getMapData', `FETCHED elements: ${data.elements?.length || 0}`);
+            return data;
+        }, false, 'getMapData');
     } catch (err) {
         logger.error(`getMapData failed | error: ${err.message}`);
         throw err;
     }
 };
 
+/**
+ * Fetches map data from OSM Overpass API.
+ * Uses AbortController for timeouts and exponential backoff for retries on 503/504 errors.
+ * @param {Object} bbox
+ * @returns {Promise<Object>}
+ */
+const fetchMapData = async (bbox) => {
+    const { minLat, minLon, maxLat, maxLon } = bbox;
+    // Added [timeout:25] server hint for Overpass processing
+    const query = `[out:json][timeout:25];(way["highway"](${minLat},${minLon},${maxLat},${maxLon}););out body;>;out qt;`;
+    const url = 'https://overpass-api.de/api/interpreter';
+    
+    let lastError;
+    let backoffMs = 2000; // Start at 2s backoff
+
+    for (let attempt = 0; attempt <= OSM_REQ_RETRY_COUNT; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), OSM_TIMEOUT_MS);
+
+        try {
+            if (attempt > 0) {
+                logger.info(`Retrying OSM fetch (Attempt ${attempt}/${OSM_REQ_RETRY_COUNT}) | backoff: ${backoffMs}ms`);
+                await delay(backoffMs);
+                backoffMs *= 2;
+            }
+
+            logger.info(`Fetching OSM data from Overpass | bbox: ${minLat},${minLon},${maxLat},${maxLon}`);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                body: 'data=' + encodeURIComponent(query),
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                const error = new Error(`OSM API error: ${response.status} ${response.statusText}`);
+                error.status = response.status;
+                
+                // Retry on 503/504
+                if ((response.status === 503 || response.status === 504) && attempt < OSM_REQ_RETRY_COUNT) {
+                    lastError = error;
+                    continue;
+                }
+                throw error;
+            }
+            
+            const data = await response.json();
+            logger.info(`OSM Data Received | elements: ${data.elements?.length || 0}`);
+            return data;
+
+        } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                lastError = new Error(`OSM Fetch Timeout after ${OSM_TIMEOUT_MS}ms`);
+                lastError.status = 408; // Request Timeout
+            } else {
+                lastError = err;
+            }
+            
+            if (attempt < OSM_REQ_RETRY_COUNT) continue;
+            throw lastError;
+        }
+    }
+    throw lastError;
+};
+
+/**
+ * Retrieves a binary-serialized MapPayload for a bounding box (Cache-Aside).
+ * Uses 'osm:pb:' prefix for v2 binary data to ensure Routing Engine v2.0 compatibility.
+ * 
+ * Workflow:
+ *  1. Quantizes input bbox.
+ *  2. Checks binary cache for regionID.
+ *  3. On miss: Fetch map data, convert to Protobuf, and store results.
+ * 
+ * @param {Object} bbox - Bounding box { minLat, minLon, maxLat, maxLon }.
+ * @returns {Promise<{ binary: Buffer, region_id: string }>} Serialized Protobuf buffer and region identifier.
+ */
+const getMapPayload = async (bbox) => {
+    const regionId = getRegionId(bbox);
+    const key = `osm:pb:${regionId.replace('bbox:', '')}`;
+    logger.call('getMapPayload', `key: ${key}`);
+
+    try {
+        const binary = await withCacheAside(key, async () => {
+            const osmJson = await fetchMapData(bbox);
+            return await convertToMapPayload(osmJson);
+        }, true, 'getMapPayload');
+
+        logger.done('getMapPayload', `SUCCESS length: ${binary.length}B`);
+        return { binary, region_id: regionId };
+    } catch (err) {
+        logger.error(`getMapPayload failed | error: ${err.message}`);
+        throw err;
+    }
+};
+
 module.exports = {
-    getMapData,
-    getBBoxKey,
-    quantize
+    getMapPayload,
+    getMapData,     // Legacy JSON support
+    getBBoxKey: getRegionId, // Alias for tests
+    getRegionId,
+    quantize,
+    convertToMapPayload
 };

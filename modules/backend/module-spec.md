@@ -10,13 +10,16 @@
 - **Orchestration Only**: The backend must never execute business logic or pathfinding; it strictly delegates to microservices.
 - **Context Preservation**: Use `AsyncLocalStorage` to maintain an atomic log buffer per request.
 - **Standardized Headers**: Quality Guardian compliant headers for maintenance and traceability.
-- **Fail-Safe Operation**: Implement fallback strategies for cache and engine unavailability.
+- **Fail-Safe Operation**: Mandatory OSM ingestion; failures must return 503 to prevent trivial (1-node) path returns.
+- **Configurable Cutoff**: Implementation-specific timeouts (default 30s) via `OSM_TIMEOUT_MS`.
 
 ### 1.3 Acceptance Criteria
-- **City-Scale Orchestration**: ✅ Manages 50MB+ OSM payloads without blocking the main thread.
+- **City-Scale Orchestration**: ✅ Manages 100MB+ binary payloads without blocking the main thread.
 - **Bounding Box Precision**: ✅ Calculates geographical search zones with 4-decimal quantization for cache hits.
+- **Protobuf Serialized**: ✅ Efficiently transmits map data via binary `map_data_pb` in gRPC requests.
 - **Atomic UID**: ✅ Every request is uniquely identifiable via an incremental integer UID.
-- **Circuit Breaker Compliant**: ✅ Forwards gRPC metadata to the Engine to enforce per-request node limits.
+- **Circuit Breaker Compliant**: ✅ Enforces a standardized **Failure Signature** (1M+1 nodes) when search limits are exceeded.
+- **Semantic Mapping**: ✅ Maps gRPC technical failures (`UNAVAILABLE`, `DEADLINE_EXCEEDED`) to user-friendly HTTP status codes (503/504).
 
 ## 2. Design
 
@@ -44,13 +47,25 @@
     - `objective`: "FASTEST" | "SHORTEST".
 - **Response Schema**:
     - Returns a `success: true` envelope containing an array of 5 algorithm results with path polylines and cost metrics.
+    - **Standardized Failure Signature**: If an algorithm hits a circuit breaker (via `circuit_breaker_triggered: true` or exceeding `ALGO_MAX_NODES`), it returns:
+        - `polyline: []` (Empty string or array depending on transport, backend enforces `[]`)
+        - `distance: 0`, `duration: 0`, `path_cost: 0`
+        - `nodes_expanded`: `1,000,001` (Always `ALGO_MAX_NODES + 1`)
+        - `circuit_breaker_triggered: true`
+        - `debug_logs`: Contains failure context (e.g., "Max nodes reached")
 
 #### gRPC Orchestration Contract
 - **Service**: `RouteService.CalculateRoute`
 - **Metadata**: 
     - `use-suite`: `true`
     - `log-dir`: Absolute path for Engine-side tracing.
-- **Payload Limits**: Manually set to **100MB** to handle massive urban road networks.
+- **Error Mapping Strategy**:
+    | gRPC Status Code | HTTP Status Code | Client Message |
+    | :--- | :--- | :--- |
+    | `DEADLINE_EXCEEDED` | `504` | Routing Engine Timeout (30s+). |
+    | `UNAVAILABLE` | `503` | Routing Engine Unavailable. |
+    | `INTERNAL` / Others | `500` | Internal Server Error. |
+- **Payload Limits**: Manually set to **50MB** to handle massive urban road networks.
 
 ## 3. Verification
 

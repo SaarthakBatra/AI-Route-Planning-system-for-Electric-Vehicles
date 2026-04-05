@@ -163,8 +163,9 @@ describe('Cache: osmWorker.js', () => {
 
     // ── 6. Error Handling ─────────────────────────────────────────────────────
     describe('getMapData: Error Handling', () => {
-        it('throws and logs error when OSM API fails', async () => {
-            const bbox = { minLat: 51, minLon: 0, maxLat: 51.1, maxLon: 0.1 };
+
+        it('throws and logs error when OSM API fails after all retries', async () => {
+            const bbox = { minLat: 51.5, minLon: -0.1, maxLat: 51.501, maxLon: -0.099 };
             mockRedisClient.get.mockResolvedValue(null);
             fetch.mockResolvedValue({
                 ok: false,
@@ -172,8 +173,13 @@ describe('Cache: osmWorker.js', () => {
                 statusText: 'Gateway Timeout'
             });
 
-            await expect(getMapData(bbox)).rejects.toThrow('OSM API error');
-            expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OSM Fetch Failed'));
-        });
+            // Trigger the async call
+            const promise = getMapData(bbox);
+
+            // We use a high timeout (30s) instead of fake timers for more stable async behavior
+            // as the real-world backoff totals ~14s (2s + 4s + 8s).
+            await expect(promise).rejects.toThrow('OSM API error');
+            expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('getMapData failed'));
+        }, 30000);
     });
 });

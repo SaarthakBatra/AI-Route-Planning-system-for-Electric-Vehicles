@@ -1,15 +1,16 @@
 /**
  * @fileoverview AI Route Planner - Frontend Core Orchestrator
  *
- * This module manages the lifecycle of the map-based interface, including:
- * 1. Leaflet.js initialization and theme management.
- * 2. User interaction handling (map clicks, keyboard input).
- * 3. Asynchronus geocoding and autocomplete via Nominatim API.
- * 4. Comparative route calculation and multi-path visualization.
- * 5. Glassmorphic telemetry notifications and interaction synchronization.
+ * WORKFLOW & INTERACTION LIFECYCLE:
+ * 1. INITIALIZATION: DOMContentLoaded triggers initMap(), loading Leaflet and setting up event listeners.
+ * 2. GEOLOCATION: The browser attempts to center the map on the user's location via navigator.geolocation.
+ * 3. COORDINATE SELECTION: Users click the map (handleMapClick) or search textually (handleGeocode/fetchSuggestions).
+ * 4. API ORCHESTRATION: calculateRoute() sends a POST request with start/end coordinates to the backend.
+ * 5. VISUALIZATION: renderAllRoutes() processes the multi-algorithm response, creating pixel-space polyline bundles.
+ * 6. TELEMETRY: spawnAlgorithmToasts() generates glassmorphic result cards with hover-sync highlighting.
  *
  * @author Antigravity
- * @version 1.2.0
+ * @version 1.3.0
  */
 
 /**
@@ -17,6 +18,13 @@
  * @type {Object}
  */
 const appConfig = {
+    // Dynamic API Base URL detection:
+    // If running on localhost (Local Dev), default to targeting the backend on port 3000.
+    // If running in production (Unified Host), use a relative root path.
+    apiBaseUrl: (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+                ? 'http://localhost:3000'
+                : '',
+    apiEndpoint: '/api/routes/calculate',
     debounceTimeMs: 800,
     popupMinimizeTimer: 60000,
     DEBUG: true,
@@ -66,8 +74,13 @@ const state = {
 const mapConfig = {
     initialCenter: [37.7749, -122.4194], // Default: San Francisco
     initialZoom: 10,
-    tileLayer: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    defaultTheme: 'light', // OPTIONS: 'light', 'dark', 'satellite'
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    tiles: {
+        dark: 'https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png',
+        light: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+    }
 };
 
 // DOM Elements
@@ -149,28 +162,31 @@ function initMap() {
         const map = L.map('map', { zoomControl: false }).setView(mapConfig.initialCenter, mapConfig.initialZoom);
 
         // Map Themes
-        const darkTheme = L.tileLayer('https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png', {
+        const darkTheme = L.tileLayer(mapConfig.tiles.dark, {
             maxZoom: 19,
             attribution: '&copy; OpenStreetMap &copy; CartoDB'
         });
 
-        const lightTheme = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        const lightTheme = L.tileLayer(mapConfig.tiles.light, {
             maxZoom: 19,
             attribution: mapConfig.attribution
         });
 
-        const satelliteTheme = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        const satelliteTheme = L.tileLayer(mapConfig.tiles.satellite, {
             maxZoom: 19,
             attribution: 'Tiles &copy; Esri'
         });
-
-        darkTheme.addTo(map);
 
         const baseMaps = {
             'Dark Theme': darkTheme,
             'Light Theme': lightTheme,
             'Satellite': satelliteTheme
         };
+
+        // Set default theme from config
+        if (mapConfig.defaultTheme === 'dark') darkTheme.addTo(map);
+        else if (mapConfig.defaultTheme === 'satellite') satelliteTheme.addTo(map);
+        else lightTheme.addTo(map);
 
         L.control.layers(baseMaps, null, { position: 'bottomleft' }).addTo(map);
         L.control.zoom({ position: 'bottomright' }).addTo(map);
@@ -335,6 +351,25 @@ function setupAutocompleteInput(map, target) {
 }
 
 /**
+ * Shared utility for Nominatim API fetching to reduce code redundancy.
+ * @private
+ * @param {string} query - The address search string.
+ * @param {number} limit - Max results to return.
+ * @returns {Promise<Array>} Collection of location objects.
+ */
+async function _fetchNominatim(query, limit = 5) {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=${limit}&q=${encodeURIComponent(query)}`;
+    logDebug('_fetchNominatim', 'API_REQUEST', { url });
+    
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Geocoding service error: ${response.status}`);
+    
+    const data = await response.json();
+    logDebug('_fetchNominatim', 'API_RESPONSE', { count: data.length });
+    return data;
+}
+
+/**
  * Executes a geographic text search for dropdown suggestions via Nominatim.
  * @param {Object} map - Leaflet Map instance.
  * @param {string} query - Search string.
@@ -344,21 +379,12 @@ function setupAutocompleteInput(map, target) {
  */
 async function fetchSuggestions(map, query, target, dropdownEl) {
     logDebug('fetchSuggestions', 'ENTRY', { query, target });
-    if (!query) {
-        logDebug('fetchSuggestions', 'EXIT_NO_QUERY');
-        return;
-    }
+    if (!query) return;
+
     try {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
-        logDebug('fetchSuggestions', 'API_REQUEST', { url });
-
-        const response = await fetch(url);
-        logDebug('fetchSuggestions', 'API_RESPONSE', { status: response.status });
-
-        const data = await response.json();
-        logDebug('fetchSuggestions', 'API_DATA', { resultCount: data ? data.length : 0 });
-
+        const data = await _fetchNominatim(query, 5);
         dropdownEl.innerHTML = '';
+        
         if (data && data.length > 0) {
             dropdownEl.classList.remove('hidden');
             data.forEach(item => {
@@ -366,27 +392,20 @@ async function fetchSuggestions(map, query, target, dropdownEl) {
                 div.className = 'suggestion-item';
                 div.innerText = item.display_name;
                 div.addEventListener('click', () => {
-                    logDebug('fetchSuggestions_SuggestionClick', 'ENTRY', { display_name: item.display_name, lat: item.lat, lon: item.lon });
-
+                    logDebug('fetchSuggestions_SuggestionClick', 'ENTRY', { display_name: item.display_name });
                     const latlng = { lat: parseFloat(item.lat), lng: parseFloat(item.lon) };
                     const shortName = item.display_name.split(',')[0] + ', ' + (item.display_name.split(',').pop().trim());
 
-                    const inputEl = target === 'start' ? ui.startInput : ui.endInput;
-                    inputEl.value = shortName;
-                    dropdownEl.classList.add('hidden');
-
                     plotMarker(map, latlng, target, shortName);
-                    logDebug('fetchSuggestions_SuggestionClick', 'EXIT_SUCCESS');
+                    dropdownEl.classList.add('hidden');
                 });
                 dropdownEl.appendChild(div);
             });
-            logDebug('fetchSuggestions', 'EXIT_SUGGESTIONS_RENDERED');
         } else {
             dropdownEl.classList.add('hidden');
-            logDebug('fetchSuggestions', 'EXIT_NO_RESULTS');
         }
     } catch (err) {
-        logDebug('fetchSuggestions', 'ERROR', { message: err.message, stack: err.stack });
+        logDebug('fetchSuggestions', 'ERROR', err.message);
         console.error('[app] Autocomplete error:', err);
     }
 }
@@ -433,21 +452,11 @@ function plotMarker(map, latlng, target, shortName) {
  */
 async function handleGeocode(map, query, target) {
     logDebug('handleGeocode', 'ENTRY', { query, target });
-    if (!query.trim()) {
-        logDebug('handleGeocode', 'EXIT_NO_QUERY');
-        return;
-    }
+    if (!query.trim()) return;
 
     showStatus(`Searching for ${query}...`, 'loading');
     try {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
-        logDebug('handleGeocode', 'API_REQUEST', { url });
-
-        const response = await fetch(url);
-        logDebug('handleGeocode', 'API_RESPONSE', { status: response.status });
-
-        const data = await response.json();
-        logDebug('handleGeocode', 'API_DATA', { resultCount: data ? data.length : 0 });
+        const data = await _fetchNominatim(query, 1);
 
         if (!data || data.length === 0) throw new Error('Location not found');
 
@@ -455,13 +464,11 @@ async function handleGeocode(map, query, target) {
         const shortName = data[0].display_name.split(',')[0] + ', ' + (data[0].display_name.split(',').pop().trim());
 
         plotMarker(map, latlng, target, shortName);
-
         showStatus('Location found', 'success');
         setTimeout(() => showStatus('', 'hidden'), 2500);
 
-        logDebug('handleGeocode', 'EXIT_SUCCESS');
     } catch (err) {
-        logDebug('handleGeocode', 'ERROR', { message: err.message, stack: err.stack });
+        logDebug('handleGeocode', 'ERROR', err.message);
         showStatus(`Geocoding error: ${err.message}`, 'error');
     }
 }
@@ -490,7 +497,7 @@ async function calculateRoute(map) {
     };
 
     try {
-        const fetchUrl = 'http://localhost:3000/api/routes/calculate';
+        const fetchUrl = appConfig.apiBaseUrl + appConfig.apiEndpoint;
 
         // PROJECT REQUIREMENT: Detailed logging for coordinates sent
         console.log('[app] Sending comparison request to API:', JSON.stringify(payload, null, 2));
@@ -502,17 +509,14 @@ async function calculateRoute(map) {
             body: JSON.stringify(payload)
         });
 
-        logDebug('calculateRoute', 'API_RESPONSE_STATUS', { status: response.status, ok: response.ok });
-
         const data = await response.json();
 
         // PROJECT REQUIREMENT: Detailed logging for full response
-        console.log('[app] Received full comparison response:', JSON.stringify(data, null, 2));
         logDebug('calculateRoute', 'API_RESPONSE_DATA', data);
 
         if (!response.ok) {
-            let errorMsg = `HTTP Error ${response.status}`;
-            errorMsg = data.message || data.error || errorMsg;
+            // Handle specialized backend error messages (e.g. 504 OSM timeout)
+            let errorMsg = data.message || data.error || `HTTP Error ${response.status}`;
             throw new Error(errorMsg);
         }
 
@@ -745,12 +749,26 @@ function spawnAlgorithmToasts(results) {
 function createAlgorithmToast(data) {
     const toast = document.createElement('div');
     toast.className = 'algorithm-toast';
+    
+    // PROJECT REQUIREMENT: Detect failure signature
+    // 1. LIMIT EXCEEDED: Circuit breaker triggered OR node expansion threshold hit
+    // 2. NO PATH FOUND: Backend returns 0 distance and 0 cost for valid regions without routes
+    const isBreakerHit = data.circuit_breaker_triggered || data.nodes_expanded > 1000000;
+    const isNoPath = !isBreakerHit && data.distance === 0 && data.path_cost === 0;
+
+    if (isBreakerHit) toast.classList.add('breaker-hit');
+    if (isNoPath) toast.classList.add('no-path');
+
     const color = appConfig.algoColors[data.algorithm] || '#ffffff';
     toast.style.setProperty('--algo-accent', color);
 
+    let badge = '';
+    if (isBreakerHit) badge = ' <span class="breaker-badge">LIMIT EXCEEDED</span>';
+    else if (isNoPath) badge = ' <span class="no-path-badge">NO PATH FOUND</span>';
+
     toast.innerHTML = `
         <div class="toast-header">
-            <h3>${data.algorithm}</h3>
+            <h3>${data.algorithm}${badge}</h3>
             <div class="toast-controls">
                 <button class="minimize-toast" title="Toggle Minimize">▲</button>
                 <button class="close-toast" title="Close">&times;</button>
@@ -767,11 +785,11 @@ function createAlgorithmToast(data) {
             </div>
             <div class="toast-stat">
                 <span class="label">Distance</span>
-                <span class="value">${formatDistance(data.distance)}</span>
+                <span class="value">${(isBreakerHit || isNoPath) ? '---' : formatDistance(data.distance)}</span>
             </div>
             <div class="toast-stat">
                 <span class="label">Cost</span>
-                <span class="value">${data.path_cost.toFixed(2)}</span>
+                <span class="value">${(isBreakerHit || isNoPath) ? '---' : data.path_cost.toFixed(2)}</span>
             </div>
         </div>
     `;

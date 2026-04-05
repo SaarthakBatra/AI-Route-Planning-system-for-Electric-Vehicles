@@ -2,6 +2,14 @@
  * @file requestLogger.js
  * @module backend/utils/requestLogger
  * @description Express middleware for automatic inbound request and outbound response logging.
+ * Intercepts res.json/res.send to provide high-fidelity traces in the request context.
+ * 
+ * @workflow
+ * 1. Extract request metadata (method, URL, body).
+ * 2. Log "INCOMING REQUEST" if DEBUG=true.
+ * 3. Wrap res.json and res.send to capture outbound status and payload.
+ * 4. Summarize large route payloads to keep log files readable.
+ * 5. Calculate and log request duration.
  */
 const logger = require('./logger');
 
@@ -29,7 +37,20 @@ const requestLogger = (req, res, next) => {
         const duration = Date.now() - startTime;
         logger.debug(`--- OUTGOING JSON RESPONSE (${duration}ms) ---`);
         logger.debug(`Status: ${res.statusCode}`);
-        logger.debug('Payload:', obj);
+
+        // Optimize trace log performance by summarizing large route payloads
+        if (obj && obj.success && obj.data && Array.isArray(obj.data.results)) {
+            const summary = obj.data.results.map(r => ({
+                algorithm: r.algorithm,
+                distance: r.distance,
+                nodes_expanded: r.nodes_expanded,
+                nodes_in_path: r.polyline ? r.polyline.length : 0
+            }));
+            logger.debug('Payload (Summary):', summary);
+        } else {
+            logger.debug('Payload:', obj);
+        }
+
         return originalJson.call(this, obj);
     };
 

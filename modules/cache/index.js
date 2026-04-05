@@ -1,19 +1,22 @@
-require('dotenv').config({ path: __dirname + '/.env' });
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 /**
- * @fileoverview Cache module health-check entry point.
+ * @fileoverview Cache Module Health-Check & Diagnostic Entry Point.
  *
- * Process:
- *  1. Load module-level environment variables.
- *  2. Validate Redis connectivity via PING.
- *  3. Perform a sample OSM worker fetch to verify the Overpass API.
- *  4. Disconnect and report results.
+ * Workflow:
+ *  1. Environment Sync: Loads module-level .env for Redis and OSM configurations.
+ *  2. Connection Probe: Pings the Redis/Valkey instance to verify availability.
+ *  3. Functional Test: Triggers a tiny area fetch from the Overpass API to verify
+ *     network connectivity and Protobuf serialization integrity.
+ *  4. Lifecycle Management: Disconnects the Redis client gracefully regardless of 
+ *     success or failure to prevent hanging processes.
  *
- * Run directly with: node modules/cache/index.js
+ * Usage: node modules/cache/index.js
  */
 
 const { client, pingRedis } = require('./services/redisClient');
-const { getMapData } = require('./services/osmWorker');
+const { getMapPayload } = require('./services/osmWorker');
 const logger = require('./utils/logger');
 
 /**
@@ -40,21 +43,24 @@ const runHealthCheck = async () => {
         
         // London tiny sample bbox
         const dummyBbox = { minLat: 51.500, minLon: -0.100, maxLat: 51.501, maxLon: -0.099 };
-        const data = await getMapData(dummyBbox);
-        const dataSize = JSON.stringify(data).length;
+        const { binary, region_id } = await getMapPayload(dummyBbox);
+        const dataSize = binary.length;
         
-        logger.info(`OSM Worker check result: ${dataSize} bytes received`);
-        logger.done('runHealthCheck', `Redis: ${pong} | OSM: ${dataSize}B`);
+        logger.info(`OSM Worker check result: ${dataSize} bytes received [Protobuf]`);
+        logger.info(`Region ID generated: ${region_id}`);
+        logger.done('runHealthCheck', `Redis: ${pong} | PB: ${dataSize}B`);
 
-        // Graceful disconnect
-        logger.info('Health checks complete. Disconnecting from Redis...');
-        await client.quit();
-        logger.info('Redis disconnected cleanly.');
+        logger.info('Health checks complete.');
     } catch (err) {
         logger.error(`Health check FAILED | error: ${err.message}`);
         logger.error('Ensure Redis is running and OSM API is accessible.');
-        if (client.status !== 'end') await client.disconnect();
         process.exitCode = 1;
+    } finally {
+        if (client && client.status !== 'end') {
+            logger.info('Disconnecting Redis client in finally block...');
+            await client.quit();
+            logger.info('Redis disconnected.');
+        }
     }
 };
 

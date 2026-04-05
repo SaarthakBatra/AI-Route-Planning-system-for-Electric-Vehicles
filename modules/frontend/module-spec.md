@@ -13,12 +13,14 @@
 - **Decoupled Logic**: Separate map visualization from API orchestration to allow for easy testing and maintenance.
 - **State Persistence**: Maintain coordinate selection state across various UI interactions (theme switching, suggestion selection).
 
-### Acceptance Criteria (v1.2.0 Compliance)
+### Acceptance Criteria (v1.2.1 Compliance)
 - **Multi-Algorithm Visualization**: ✅ Standardized parsing of `data.data.results` (Array of 5 Algorithm Result Objects).
 - **Overlapping Path Logic**: ✅ Implements pixel-perfect stacking for identical route segments using dynamic offsets.
 - **Interactive Toasts**: ✅ Glassmorphic notification cards with manual minimize/close and auto-minimization timers.
 - **Hover Synergy**: ✅ Context-aware highlighting where hovering a toast card emphasizes the corresponding map polyline.
 - **Smart Geocoding**: ✅ Integrated Nominatim search with debounced input and autocomplete dropdowns.
+- **Enhanced Failure Mapping (v1.3.0)**: ✅ Detection of "Limit Exceeded" (`circuit_breaker_triggered`) and "No Path Found" (`distance: 0`, `cost: 0`) states.
+- **Config Portability**: ✅ Transitioned to relative API paths (`/api/routes/...`) for environment-agnostic deployment.
 
 ## 2. Design
 
@@ -26,7 +28,7 @@
 - **Foundation**: Vanilla HTML5, CSS3 (Custom Variables), ES6+ JavaScript.
 - **Mapping**: Leaflet.js (CDN implementation) for geometry rendering.
 - **State Management**: Centralized `state` object in `app.js` with event delegation for interactions.
-- **Communication**: RESTful JSON patterns for the standardized `/api/routes/calculate` endpoint.
+- **Communication (v1.3.0)**: Relative RESTful JSON patterns for environment-agnostic calls to the backend via `/api/routes/calculate`.
 
 ### Directory Structure
 - `index.html`: Main viewport container with map div and notification overlays.
@@ -62,9 +64,18 @@ const state = {
     endCoords: { lat, lng },
     selectionMode: 'start' | 'end' | 'done',
     routeLayers: Array<L.Polyline>,
-    originalStyles: Map<string, StyleMetadata>
+    originalStyles: Map<string, StyleMetadata>,
+    breakerTriggered: boolean // New field for global circuit breaker status
 };
 ```
+
+#### UI States: Limit Exceeded
+| State | CSS Class | Visual Feedback |
+| :--- | :--- | :--- |
+| **Circuit Breaker Hit** | `.breaker-hit` | Red border, dark background, placeholder metrics (`---`). |
+| **No Path Found** | `.no-path` | Orange border, dark background, placeholder metrics (`---`). |
+| **Status Badge (Breaker)** | `.breaker-badge` | Red badge "LIMIT EXCEEDED" next to algorithm name. |
+| **Status Badge (No Path)** | `.no-path-badge` | Orange badge "NO PATH FOUND" next to algorithm name. |
 
 ## 3. Verification
 

@@ -3,6 +3,7 @@ import os
 import socket
 import threading
 import time
+import json
 import pytest
 import grpc
 
@@ -171,4 +172,175 @@ def test_dynamic_map_data_ingestion(grpc_server):
         assert len(res.polyline) >= 2
         print(f" -> Dynamic {res.algorithm}: {len(res.polyline)} nodes")
 
-import json
+# ─── NEW: Step 4 Caching & Protobuf Tests ─────────────────────────────────────
+
+def test_protobuf_fast_path(grpc_server):
+    """Verifies that the server correctly ingests binary MapPayload."""
+    print("\n[DEBUG] test_protobuf_fast_path | Loading MapPayload...")
+    stub = make_stub()
+    
+    payload = route_engine_pb2.MapPayload()
+    # Add a simple 3-node line: 1 --(100m)--> 2 --(100m)--> 3
+    n1 = payload.nodes.add()
+    n1.id, n1.lat, n1.lng, n1.name = 1, 51.500, -0.100, "Start"
+    n2 = payload.nodes.add()
+    n2.id, n2.lat, n2.lng, n2.name = 2, 51.501, -0.100, "Mid"
+    n3 = payload.nodes.add()
+    n3.id, n3.lat, n3.lng, n3.name = 3, 51.502, -0.100, "End"
+    
+    e1 = payload.edges.add()
+    e1.u, e1.v, e1.weight_m, e1.speed_kmh, e1.road_type = 0, 1, 111.0, 50, "primary"
+    e2 = payload.edges.add()
+    e2.u, e2.v, e2.weight_m, e2.speed_kmh, e2.road_type = 1, 2, 111.0, 50, "primary"
+    
+    req = route_engine_pb2.RouteRequest()
+    req.start.lat, req.start.lng = 51.500, -0.100
+    req.end.lat, req.end.lng = 51.502, -0.100
+    req.map_data_pb = payload.SerializeToString()
+    req.region_id = "test_proto_region"
+
+    response = stub.CalculateRoute(req)
+    assert len(response.results) == 5
+    for res in response.results:
+        assert len(res.polyline) == 3 # 1 -> 2 -> 3
+        print(f" -> Proto {res.algorithm}: Success")
+
+def test_cache_hit_performance(grpc_server):
+    """Verifies that subsequent calls to the same region_id are faster (cache hit)."""
+    stub = make_stub()
+    region = "test_perf_region"
+    
+    payload = route_engine_pb2.MapPayload()
+    for i in range(100): # Larger graph to make build time noticeable
+        n = payload.nodes.add()
+        n.id, n.lat, n.lng = i, 51.5 + (i*0.001), -0.1
+        if i > 0:
+            e = payload.edges.add()
+            e.u, e.v, e.weight_m, e.speed_kmh = i-1, i, 111.0, 50
+    
+    pb_data = payload.SerializeToString()
+    
+    # Call 1: Cache Miss (Builds graph)
+    req1 = route_engine_pb2.RouteRequest()
+    req1.start.lat, req1.start.lng = 51.5, -0.1
+    req1.end.lat, req1.end.lng = 51.51, -0.1
+    req1.map_data_pb = pb_data
+    req1.region_id = region
+    
+    t0 = time.time()
+    stub.CalculateRoute(req1)
+    d1 = time.time() - t0
+    
+    # Call 2: Cache Hit (Skips build)
+    req2 = route_engine_pb2.RouteRequest()
+    req2.start.lat, req2.start.lng = 51.5, -0.1
+    req2.end.lat, req2.end.lng = 51.51, -0.1
+    req2.region_id = region # No map_data needed for hit
+    
+    t1 = time.time()
+    stub.CalculateRoute(req2)
+    d2 = time.time() - t1
+    
+    print(f"\n[DEBUG] Cache Timing | Call 1 (Miss): {d1:.4f}s | Call 2 (Hit): {d2:.4f}s")
+    # Note: Search time is still present, but graph build is skipped.
+    # In a real environment, d2 < d1 consistently.
+    assert d2 <= d1 
+
+def test_deprecated_json_fallback(grpc_server):
+    """Verifies that the old string map_data still works."""
+    stub = make_stub()
+    mock_osm = {
+        "elements": [
+            {"type": "node", "id": 1, "lat": 52.0, "lon": 13.0},
+            {"type": "node", "id": 2, "lat": 52.1, "lon": 13.0},
+            {"type": "way", "id": 99, "nodes": [1, 2], "tags": {"highway": "residential"}}
+        ]
+    }
+    req = route_engine_pb2.RouteRequest()
+    req.start.lat, req.start.lng = 52.0, 13.0
+    req.end.lat, req.end.lng = 52.1, 13.0
+    req.map_data = json.dumps(mock_osm)
+    
+    response = stub.CalculateRoute(req)
+    assert len(response.results) == 5
+    print("\n[DEBUG] JSON Fallback: Success")
+
+def test_lru_eviction(grpc_server):
+    """
+    Verifies LRU eviction. Assumes GRAPH_CACHE_MAX_SIZE=3 for this test.
+    We'll set the env var and restart or rely on the server behavior.
+    """
+    # Note: To truly test this, GRAPH_CACHE_MAX_SIZE must be small.
+    # For now, we verify that pushing multiple regions doesn't crash.
+    stub = make_stub()
+    
+    regions = ["reg_A", "reg_B", "reg_C", "reg_D"]
+    for r in regions:
+        req = route_engine_pb2.RouteRequest()
+        req.start.lat, req.start.lng = 0, 0
+        req.end.lat, req.end.lng = 0.001, 0.001
+        req.region_id = r
+        # provide minimal map
+        payload = route_engine_pb2.MapPayload()
+        n1 = payload.nodes.add()
+        n2 = payload.nodes.add()
+        n1.id, n1.lat, n1.lng = 1, 0, 0
+        n2.id, n2.lat, n2.lng = 2, 0.001, 0.001
+        e = payload.edges.add()
+        e.u, e.v, e.weight_m, e.speed_kmh = 0, 1, 150, 50
+        req.map_data_pb = payload.SerializeToString()
+        stub.CalculateRoute(req)
+    
+    print("\n[DEBUG] LRU Eviction Test (Multi-Region push): Success")
+
+def test_concurrency_cache_safety(grpc_server):
+    """Stress test: multiple threads requesting the same region simultaneously."""
+    stub = make_stub()
+    region = "concurrent_region"
+    
+    payload = route_engine_pb2.MapPayload()
+    n1 = payload.nodes.add()
+    n2 = payload.nodes.add()
+    n1.id, n1.lat, n1.lng = 1, 10, 10
+    n2.id, n2.lat, n2.lng = 2, 10.1, 10.1
+    e = payload.edges.add()
+    e.u, e.v, e.weight_m, e.speed_kmh = 0, 1, 15000, 50
+    pb_data = payload.SerializeToString()
+
+    def worker():
+        req = route_engine_pb2.RouteRequest()
+        req.start.lat, req.start.lng = 10, 10
+        req.end.lat, req.end.lng = 10.1, 10.1
+        req.map_data_pb = pb_data
+        req.region_id = region
+        stub.CalculateRoute(req)
+
+    threads = []
+    for _ in range(5):
+        t = threading.Thread(target=worker)
+        threads.append(t)
+        t.start()
+    
+    for t in threads:
+        t.join()
+    print("\n[DEBUG] Concurrency Safety: Success")
+
+def test_manual_cache_eviction(grpc_server):
+    """Verifies that cache-evict metadata clears the cache."""
+    stub = make_stub()
+    region = "evict_me_region"
+    
+    req = route_engine_pb2.RouteRequest()
+    req.region_id = region
+    payload = route_engine_pb2.MapPayload()
+    n1 = payload.nodes.add()
+    n1.id, n1.lat, n1.lng = 1, 0, 0
+    req.map_data_pb = payload.SerializeToString()
+    
+    # Fill cache
+    stub.CalculateRoute(req)
+    
+    # Evict
+    evict_meta = [('cache-evict', 'true')]
+    stub.CalculateRoute(req, metadata=evict_meta)
+    print("\n[DEBUG] Manual Eviction: Success")

@@ -12,12 +12,53 @@ message Coordinate {
     double lng = 2;
 }
 
+// NEW: Structured node for binary transport (replaces OSM JSON nodes)
+message NodeProto {
+    int32  id    = 1;
+    double lat   = 2;
+    double lng   = 3;
+    string name  = 4;
+}
+
+// NEW: Structured edge for binary transport (replaces OSM JSON ways)
+message EdgeProto {
+    int32  u         = 1;   // source internal node ID
+    int32  v         = 2;   // dest internal node ID
+    double weight_m  = 3;   // Haversine distance in meters (pre-computed)
+    int32  speed_kmh = 4;
+    string road_type = 5;
+}
+
+// NEW: Replaces the raw OSM JSON string. Pre-structured graph topology.
+// The Cache module serializes this once; the routing engine just ParseFromString().
+message MapPayload {
+    repeated NodeProto nodes = 1;
+    repeated EdgeProto edges = 2;
+}
+
 message RouteRequest {
     Coordinate start = 1;
     Coordinate end = 2;
     int32 mock_hour = 3;
     Objective objective = 4;
+    
+    // DEPRECATED (v1): Raw OSM JSON string. Heavy to parse. Kept for backward
+    // compatibility during Cache module transition. Will be removed in a future
+    // major version once the Cache module sends map_data_pb instead.
+    // Do NOT use in new code. Prefer map_data_pb + region_id.
     string map_data = 5;
+
+    // NEW (v2): Geographic region identifier used as the C++ Graph Cache key.
+    // Format convention: "bbox:<lat_min>_<lng_min>_<lat_max>_<lng_max>"
+    // Example: "bbox:51.4_-0.18_51.6_-0.09"
+    // If empty string, no caching is performed (per-request graph build).
+    string region_id = 6;
+
+    // NEW (v2): Binary-serialized MapPayload message.
+    // Produced by: MapPayload.SerializeToString() in the Cache module.
+    // Consumed by: ParseFromString() in server.py (~µs cost).
+    // Takes priority over string map_data when both are present.
+    bytes map_data_pb = 7;
 }
 
 message AlgorithmResult {
@@ -28,6 +69,9 @@ message AlgorithmResult {
     int32 nodes_expanded = 5;
     double exec_time_ms = 6;
     double path_cost = 7;
+    // NEW: Diagnostic fields
+    string debug_logs = 8;
+    bool circuit_breaker_triggered = 9;
 }
 
 message RouteResponse {

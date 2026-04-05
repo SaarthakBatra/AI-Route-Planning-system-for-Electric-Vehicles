@@ -2,6 +2,12 @@
  * @file context.js
  * @module backend/utils/context
  * @description Manages asynchronous request context using AsyncLocalStorage.
+ * Provides a unified storage buffer for cross-module logs and request metadata.
+ * 
+ * @workflow
+ * 1. Initialize AsyncLocalStorage instance (storage).
+ * 2. Create a global activeRegistry (Set) for emergency watchdog flushes.
+ * 3. Export register/unregister helpers to manage lifecycle and prevent memory leaks.
  */
 const { AsyncLocalStorage } = require('async_hooks');
 

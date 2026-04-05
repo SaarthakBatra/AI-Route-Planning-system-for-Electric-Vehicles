@@ -7,7 +7,7 @@ jest.mock('../../modules/backend/services/grpcClient', () => ({
     calculateRouteGrpc: jest.fn()
 }));
 jest.mock('../../modules/cache/services/osmWorker', () => ({
-    getMapData: jest.fn().mockResolvedValue({ elements: [] }) // Default to empty
+    getMapPayload: jest.fn().mockResolvedValue({ binary: null, region_id: '' }) // Default to empty
 }));
 
 describe('POST /api/routes/calculate', () => {
@@ -72,13 +72,14 @@ describe('POST /api/routes/calculate', () => {
         expect(result.duration).toBe(300);
         expect(result.nodes_expanded).toBe(42);
 
-        // Verify gRPC was called with the 5th map_data argument (empty in this mock case)
+        // Verify gRPC was called with binary and region_id (empty in this mock case)
         expect(calculateRouteGrpc).toHaveBeenCalledWith(
             { lat: 40.7128, lng: -74.0060 },
             { lat: 40.7306, lng: -73.9866 },
             12,
             'FASTEST',
-            '' 
+            null,
+            ''
         );
     });
 

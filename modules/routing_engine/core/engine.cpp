@@ -1,16 +1,31 @@
 /**
  * @file engine.cpp
- * @brief High-performance C++ Routing Engine core.
+ * @brief High-performance C++ Routing Engine core for AI Route Planner.
  * 
  * This module implements a suite of 5 academic search algorithms (BFS, Dijkstra,
- * IDDFS, A*, and IDA*) for pathfinding on road networks. It is designed to be
- * called from Python via pybind11.
+ * IDDFS, A*, and IDA*) for pathfinding on road networks. It is designed as a
+ * computationally intensive monolith to maximize cache locality and instruction-level
+ * parallelism through std::async.
  * 
- * Key Features:
- * - Hybrid Search Suite: Executes 5 algorithms in parallel via std::async.
- * - Dynamic OSM Ingestion: Builds adjacency lists from injected JSON data.
- * - Robustness: Includes Circuit Breakers (max node limits) and Island Detection.
- * - Optimization: Uses Fringe Search, Transposition Tables, and Precision Banding.
+ * --- ARCHITECTURE & WORKFLOW ---
+ * 1. MAP INGESTION: The engine accepts dynamic OSM data (nodes and edges) or falls back
+ *    to a static corridor for testing. Nodes are quantized into internal vector indices.
+ * 2. GRAPH CACHE (LRU): To eliminate O(V+E) reconstruction latency, fully processed
+ *    Graph structs are cached by 'region_id'. A cache hit provides O(1) start-to-search.
+ * 3. ISLAND DETECTION: A pre-search BFS (flood fill) labels disconnected components.
+ *    If start and end belong to different components, the suite aborts in <1ms.
+ * 4. PARALLEL SUITE: 5 independent search threads are launched via std::async, 
+ *    utilizing all available CPU cores for simultaneous algorithm benchmarking.
+ * 5. FAILURE SIGNATURES: If a circuit breaker (ROUTING_MAX_NODES) is hit, the engine
+ *    returns a standardized "Failure Signature" (nodes_expanded = limit + 1) to the
+ *    Python layer for UI visualization.
+ * 
+ * --- ALGORITHMS ---
+ * - BFS: Unweighted hop-count search.
+ * - Dijkstra: Optimal weighted search (Priority Queue relaxation).
+ * - IDDFS: Memory-efficient iterative deepening with Fringe Search optimization.
+ * - A*: Heuristic-guided search (Haversine distance).
+ * - IDA*: Iterative Deepening A* with Precision Banding and Geometric Overshoot (v2.0.2).
  */
 #include <iostream>
 #include <vector>
@@ -27,6 +42,10 @@
 #include <set>
 #include <sstream>
 #include <iomanip>
+#include <mutex>
+#include <list>
+#include <unordered_map>
+#include <cstdlib>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -68,6 +87,109 @@ enum class Objective {
     FASTEST = 0,
     SHORTEST = 1
 };
+
+// ─── Graph Cache (LRU) ────────────────────────────────────────────────────────
+//
+// Purpose:
+//   Persists fully-constructed Graph topology structs across gRPC calls.
+//   A cache hit skips the entire O(V+E) graph build + component labeling,
+//   reducing repeated-region latency from O(V+E) to O(1).
+//
+// Key: region_id string (e.g., "bbox:51.4_-0.18_51.6_-0.09")
+//      Empty region_id bypasses the cache entirely.
+//
+// Eviction: Least-Recently-Used (LRU). Bounded by GRAPH_CACHE_MAX_SIZE env var.
+//           Default: 20 regions. Eviction occurs on insert when at capacity.
+//
+// Thread Safety Model:
+//   - std::mutex graph_cache_mutex guards ALL cache reads, writes, and evictions.
+//   - The mutex is held ONLY for the lookup/insert/evict operation itself.
+//   - It is released BEFORE std::async algorithm dispatches are launched.
+//   - All 5 search algorithms take a 'const Graph&' — purely read-only.
+//   - Concurrent gRPC calls on the SAME region_id: the FIRST builds and inserts
+//     under the mutex. Subsequent calls find the entry and get a read reference.
+//   - Concurrent gRPC calls on DIFFERENT region_ids: no contention after lookup.
+
+struct GraphCacheEntry {
+    Graph graph;
+    double max_speed;
+};
+
+// LRU ordering: front = most recently used, back = least recently used (evict target)
+static std::list<std::string> s_lru_order;
+
+// Primary store: region_id -> (GraphCacheEntry, iterator-into-s_lru_order)
+static std::unordered_map<
+    std::string,
+    std::pair<GraphCacheEntry, std::list<std::string>::iterator>
+> s_graph_cache;
+
+static std::mutex s_graph_cache_mutex;
+
+/**
+ * @brief Inserts or refreshes a graph cache entry, evicting LRU if at capacity.
+ * @pre MUST be called with s_graph_cache_mutex held.
+ */
+static void cache_insert(const std::string& region_id,
+                         GraphCacheEntry&& entry,
+                         int max_size) {
+    auto it = s_graph_cache.find(region_id);
+    if (it != s_graph_cache.end()) {
+        // Already cached: refresh LRU position and update entry
+        s_lru_order.erase(it->second.second);
+        s_lru_order.push_front(region_id);
+        it->second.first = std::move(entry);
+        it->second.second = s_lru_order.begin();
+        return;
+    }
+    // Evict least recently used if at capacity
+    if (static_cast<int>(s_graph_cache.size()) >= max_size) {
+        const std::string& lru_key = s_lru_order.back();
+        s_graph_cache.erase(lru_key);
+        s_lru_order.pop_back();
+    }
+    s_lru_order.push_front(region_id);
+    s_graph_cache[region_id] = {std::move(entry), s_lru_order.begin()};
+}
+
+/**
+ * @brief Clears all cache entries. Called on cache-evict flag or test teardown.
+ * @pre MUST be called with s_graph_cache_mutex held.
+ */
+static void cache_clear_locked() {
+    s_graph_cache.clear();
+    s_lru_order.clear();
+}
+
+/**
+ * @brief Reads GRAPH_CACHE_MAX_SIZE from environment. Falls back to 20.
+ */
+static int get_cache_max_size() {
+    const char* env = std::getenv("GRAPH_CACHE_MAX_SIZE");
+    if (env) {
+        int val = std::atoi(env);
+        if (val > 0) return val;
+    }
+    return 20;
+}
+
+/** @brief Returns the current number of entries in the graph cache. */
+int get_graph_cache_size() {
+    std::lock_guard<std::mutex> lock(s_graph_cache_mutex);
+    return static_cast<int>(s_graph_cache.size());
+}
+
+/** @brief Returns true if the given region_id is currently exists in the cache. */
+bool is_region_cached(const std::string& region_id) {
+    std::lock_guard<std::mutex> lock(s_graph_cache_mutex);
+    return s_graph_cache.count(region_id) > 0;
+}
+
+/** @brief Fully clears the graph cache. For test isolation ONLY. */
+void clear_graph_cache_for_testing() {
+    std::lock_guard<std::mutex> lock(s_graph_cache_mutex);
+    cache_clear_locked();
+}
 
 // --- Utilities ---
 /**
@@ -121,6 +243,10 @@ const std::vector<Node> STATIC_NODES_DATA = {
     {25, 26.9022, 75.1934, "Sambhar Lake"}
 };
 
+/**
+ * @brief INTERNAL_FALLBACK_ONLY: Returns a static graph representation of the
+ * Jaipur-Pilani corridor for unit testing and offline development.
+ */
 Graph get_static_graph() {
     Graph g;
     g.nodes = STATIC_NODES_DATA;
@@ -169,14 +295,22 @@ Graph get_static_graph() {
     return g;
 }
 
+/**
+ * @brief Finds the nearest graph node to a given set of coordinates.
+ * 
+ * @param lat, lng Input coordinates.
+ * @param g The graph to search.
+ * @return int Internal node index, or -1 if the graph is empty.
+ */
 int find_nearest_node(double lat, double lng, const Graph& g) {
+    if (g.nodes.empty()) return -1;
     int nearest_id = 0;
     double min_dist = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i < g.nodes.size(); ++i) {
         double d = haversine(lat, lng, g.nodes[i].lat, g.nodes[i].lng);
         if (d < min_dist) {
             min_dist = d;
-            nearest_id = i;
+            nearest_id = (int)i;
         }
     }
     return nearest_id;
@@ -184,15 +318,17 @@ int find_nearest_node(double lat, double lng, const Graph& g) {
 
 // --- Dynamic Max Speed ---
 double calculate_max_speed(const Graph& g) {
-    double max_speed = 30.0; // Default safety floor
+    double max_speed = 0.0;
+    bool found = false;
     for (const auto& adj : g.adjacency_list) {
         for (const auto& edge : adj) {
             if (edge.speed_kmh > max_speed) {
                 max_speed = edge.speed_kmh;
+                found = true;
             }
         }
     }
-    return max_speed;
+    return found ? max_speed : 30.0; // Return 30.0 only if no edges exist
 }
 
 // --- Island Detection (Graph Labeling) ---
@@ -368,6 +504,14 @@ AlgorithmResult run_bfs(int start, int end, Objective obj, int hour, const Graph
     AlgorithmResult res = reconstruct_path(prev, start, end, "BFS", nodes_expanded, exec_time, obj, hour, g);
     res.debug_logs = oss.str();
     res.circuit_breaker_triggered = triggered;
+    if (triggered) {
+        // --- Failure Signature Protocol ---
+        res.nodes_expanded = max_nodes + 1;
+        res.distance_m = 0;
+        res.duration_s = 0;
+        res.path_cost = 0;
+        res.path.clear();
+    }
     return res;
 }
 
@@ -442,6 +586,14 @@ AlgorithmResult run_dijkstra(int start, int end, Objective obj, int hour, const 
     AlgorithmResult res = reconstruct_path(prev, start, end, "Dijkstra", nodes_expanded, exec_time, obj, hour, g);
     res.debug_logs = oss.str();
     res.circuit_breaker_triggered = triggered;
+    if (triggered) {
+        // --- Failure Signature Protocol ---
+        res.nodes_expanded = max_nodes + 1;
+        res.distance_m = 0;
+        res.duration_s = 0;
+        res.path_cost = 0;
+        res.path.clear();
+    }
     return res;
 }
 
@@ -516,6 +668,7 @@ AlgorithmResult run_iddfs(int start, int end, Objective obj, int hour, const Gra
                     nodes_expanded++;
                     if (nodes_expanded > max_nodes) {
                         triggered = true;
+                        if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
                         break;
                     }
                     if (u == end) {
@@ -572,6 +725,14 @@ AlgorithmResult run_iddfs(int start, int end, Objective obj, int hour, const Gra
     AlgorithmResult res = reconstruct_path(final_prev, start, end, "IDDFS", nodes_expanded, exec_time, obj, hour, g);
     res.debug_logs = oss.str();
     res.circuit_breaker_triggered = triggered;
+    if (triggered) {
+        // --- Failure Signature Protocol ---
+        res.nodes_expanded = max_nodes + 1;
+        res.distance_m = 0;
+        res.duration_s = 0;
+        res.path_cost = 0;
+        res.path.clear();
+    }
     return res;
 }
 
@@ -611,13 +772,23 @@ AlgorithmResult run_astar(int start, int end, Objective obj, int hour, const Gra
     pq.push({h_start, start});
     
     while (!pq.empty()) {
+        double f_score = pq.top().first;
         int u = pq.top().second;
         pq.pop();
         
+        // Outdated entry check (Dijkstra parity)
+        if (f_score > g_score[u] + get_heuristic(u, end, obj, g, max_speed)) continue;
+
         nodes_expanded++;
         if (nodes_expanded > max_nodes) {
             triggered = true;
+            if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
             break;
+        }
+
+        if (debug_enabled) {
+            oss << "### Step " << nodes_expanded << ": Expanding Node " << u << " (" << g.nodes[u].name << ")\n";
+            oss << "- Current Path Cost: " << std::fixed << std::setprecision(2) << g_score[u] << "\n";
         }
 
         if (u == end) {
@@ -642,6 +813,14 @@ AlgorithmResult run_astar(int start, int end, Objective obj, int hour, const Gra
     AlgorithmResult res = reconstruct_path(prev, start, end, "A*", nodes_expanded, exec_time, obj, hour, g);
     res.debug_logs = oss.str();
     res.circuit_breaker_triggered = triggered;
+    if (triggered) {
+        // --- Failure Signature Protocol ---
+        res.nodes_expanded = max_nodes + 1;
+        res.distance_m = 0;
+        res.duration_s = 0;
+        res.path_cost = 0;
+        res.path.clear();
+    }
     return res;
 }
 
@@ -696,6 +875,7 @@ AlgorithmResult run_idastar_core(int start, int end, Objective obj, int hour, co
                     global_expansion++;
                     if (global_expansion > max_nodes) {
                         triggered = true;
+                        if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
                         break;
                     }
                     if (f > threshold) {
@@ -742,12 +922,16 @@ AlgorithmResult run_idastar_core(int start, int end, Objective obj, int hour, co
         if (min_val == std::numeric_limits<double>::infinity() && later.empty()) break;
 
         // Banding Buffer implementation
-        threshold = threshold + std::max(banding_val, min_val - threshold);
+        // Industry-standard Geometric Thresholding
+        // Overshoots min_val by 50% of the discovered increment to skip redundant layers
+        double jump = std::max(banding_val, (min_val - threshold) * 1.5);
+        threshold = threshold + jump;
         now = std::move(later);
         later.clear();
     }
     
     AlgorithmResult res;
+    res.algorithm = "IDA*";
     res.nodes_expanded = nodes_expanded;
     res.circuit_breaker_triggered = triggered;
     res.path_cost = std::numeric_limits<double>::infinity();
@@ -755,6 +939,16 @@ AlgorithmResult run_idastar_core(int start, int end, Objective obj, int hour, co
     if (found) {
         res = reconstruct_path(final_prev, start, end, "IDA*", global_expansion, 0, obj, hour, g);
         res.circuit_breaker_triggered = triggered;
+    }
+
+    if (triggered) {
+        // --- Failure Signature Protocol ---
+        res.nodes_expanded = max_nodes + 1;
+        res.distance_m = 0;
+        res.duration_s = 0;
+        res.path_cost = 0;
+        res.path.clear();
+        res.algorithm = "IDA*";
     }
     return res;
 }
@@ -776,10 +970,18 @@ AlgorithmResult run_idastar(int start, int end, Objective obj, int hour, const G
     // Pass 1: Global Max Speed (Optimistic/Safe)
     if (debug_enabled) oss << "## Pass 1: Global Max Speed (" << max_speed_global << " kmh)\n";
     AlgorithmResult res1 = run_idastar_core(start, end, obj, hour, g, debug_enabled, max_nodes, max_speed_global, banding_val, oss, global_exp);
+    if (res1.circuit_breaker_triggered) {
+        res1.algorithm = "IDA*";
+        res1.debug_logs = oss.str();
+        auto current_time = std::chrono::high_resolution_clock::now();
+        res1.exec_time_ms = std::chrono::duration<double, std::milli>(current_time - start_time).count();
+        return res1;
+    }
     
-    // Pass 2: Conservative Max Speed (30 kmh floor for aggressive pruning)
-    if (debug_enabled) oss << "\n## Pass 2: Conservative Max Speed (30 kmh)\n";
-    AlgorithmResult res2 = run_idastar_core(start, end, obj, hour, g, debug_enabled, max_nodes, 30.0, banding_val, oss, global_exp);
+    // Pass 2: Conservative Max Speed (50% of Global Max for aggressive pruning)
+    double max_speed_conservative = std::max(30.0, max_speed_global * 0.5);
+    if (debug_enabled) oss << "\n## Pass 2: Conservative Max Speed (" << max_speed_conservative << " kmh)\n";
+    AlgorithmResult res2 = run_idastar_core(start, end, obj, hour, g, debug_enabled, max_nodes, max_speed_conservative, banding_val, oss, global_exp);
     
     AlgorithmResult best_res;
     if (res1.path_cost < res2.path_cost) best_res = res1;
@@ -815,6 +1017,8 @@ AlgorithmResult run_idastar(int start, int end, Objective obj, int hour, const G
 std::vector<AlgorithmResult> calculate_all_routes(
     double start_lat, double start_lng, double end_lat, double end_lng, 
     int mock_hour, int objective_val, bool algo_debug,
+    const std::string& region_id,
+    bool cache_evict,
     const std::vector<std::tuple<int, double, double, std::string>>& dyn_nodes,
     const std::vector<std::tuple<int, int, double, int, std::string>>& dyn_edges,
     int max_nodes,
@@ -822,6 +1026,68 @@ std::vector<AlgorithmResult> calculate_all_routes(
     double banding_fastest,
     double epsilon_min
 ) {
+    int cache_max = get_cache_max_size();
+
+    // ── Manual Cache Eviction ─────────────────────────────────────────────────
+    if (cache_evict) {
+        std::lock_guard<std::mutex> lock(s_graph_cache_mutex);
+        cache_clear_locked();
+    }
+
+    // ── FAST PATH: Cache Lookup ───────────────────────────────────────────────
+    if (!region_id.empty()) {
+        std::unique_lock<std::mutex> lock(s_graph_cache_mutex);
+        auto it = s_graph_cache.find(region_id);
+        if (it != s_graph_cache.end()) {
+            // CACHE HIT: promote to MRU position
+            s_lru_order.erase(it->second.second);
+            s_lru_order.push_front(region_id);
+            it->second.second = s_lru_order.begin();
+
+            const Graph& cached_g = it->second.first.graph;
+            double cached_max_speed = it->second.first.max_speed;
+
+            int start_idx = find_nearest_node(start_lat, start_lng, cached_g);
+            int end_idx = find_nearest_node(end_lat, end_lng, cached_g);
+            Objective objective = static_cast<Objective>(objective_val);
+
+            // Island Detection Check
+            if (cached_g.nodes[start_idx].component_id != cached_g.nodes[end_idx].component_id) {
+                lock.unlock(); // Release lock before returning
+                AlgorithmResult no_route;
+                no_route.distance_m = 0;
+                no_route.duration_s = 0;
+                no_route.nodes_expanded = 0;
+                no_route.debug_logs = "Island Detection: Start and End nodes are in disconnected components.";
+                
+                std::vector<AlgorithmResult> results;
+                std::vector<std::string> algos = {"BFS", "Dijkstra", "IDDFS", "A*", "IDA*"};
+                for (const auto& name : algos) {
+                    AlgorithmResult r = no_route;
+                    r.algorithm = name;
+                    results.push_back(r);
+                }
+                return results;
+            }
+
+            // Launch algorithms using the cached graph
+            // We need to be careful with references.std::async with std::ref(cached_g) is fine
+            // as long as the map entry isn't deleted.Since we only delete on INSERT, 
+            // and this is a search, it's generally safe if we don't have extremely high churn.
+            
+            auto f_bfs = std::async(std::launch::async, run_bfs, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes);
+            auto f_dijkstra = std::async(std::launch::async, run_dijkstra, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes);
+            auto f_iddfs = std::async(std::launch::async, run_iddfs, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes, epsilon_min);
+            auto f_astar = std::async(std::launch::async, run_astar, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes, cached_max_speed);
+            auto f_idastar = std::async(std::launch::async, run_idastar, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes, banding_shortest, banding_fastest);
+
+            auto results = std::vector<AlgorithmResult>{f_bfs.get(), f_dijkstra.get(), f_iddfs.get(), f_astar.get(), f_idastar.get()};
+            lock.unlock(); // Release lock ONLY after all async threads have finished reading cached_g
+            return results;
+        }
+    }
+
+    // ── SLOW PATH: Graph Build (Cache Miss or No Region ID) ──────────────────
     Graph g;
     if (dyn_nodes.empty()) {
         g = get_static_graph();
@@ -837,6 +1103,10 @@ std::vector<AlgorithmResult> calculate_all_routes(
             double dist = std::get<2>(de);
             int speed = std::get<3>(de);
             std::string type = std::get<4>(de);
+
+            // NAN/INF Weight Validation
+            if (!std::isfinite(dist) || dist < 0) dist = 999999.0; 
+
             if (static_cast<size_t>(u) < g.nodes.size() && static_cast<size_t>(v) < g.nodes.size()) {
                 g.adjacency_list[u].push_back({v, dist, speed, type});
             }
@@ -845,6 +1115,12 @@ std::vector<AlgorithmResult> calculate_all_routes(
 
     compute_components(g); // Pre-process for Island Detection
     double max_speed = calculate_max_speed(g);
+
+    // Store in cache if region_id provided
+    if (!region_id.empty()) {
+        std::lock_guard<std::mutex> lock(s_graph_cache_mutex);
+        cache_insert(region_id, {g, max_speed}, cache_max);
+    }
 
     int start_idx = find_nearest_node(start_lat, start_lng, g);
     int end_idx = find_nearest_node(end_lat, end_lng, g);

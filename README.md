@@ -2,15 +2,15 @@
 
 An industrial-grade, multi-objective EV route planning system utilizing a high-performance C++/Python routing engine, Node.js orchestration, and a modern Leaflet-based frontend.
 
-## 🚀 Status: Stage 4 - Memory-Speed Ingestion & Scaling (v2.0.0) - IN PROGRESS
-The project has successfully transitioned from the **Academic Search Suite (v1.0)** to the **High-Performance Scaling & Persistence (v2.0)** phase. We are currently focusing on eliminating gRPC latency via Graph Persistence and Protobuf serialization.
+## 🚀 Status: v1.1.0 - Snapshot Created (Stage 4 Complete)
+The project has successfully completed **Stage 4: Map Graph Persistence & Protobuf Serialization**. This state provides sub-100ms gRPC ingestion and is archived in the `v1.x` branch.
 
 ---
 
 ## 🕒 Version History
 
 - **v1.0.0 (v10)**: [Completed] 5 Academic Search algorithms, Dynamic OSM ingestion, L3 traffic complexity. (Snapshot in `v1.x` branch)
-- **v2.0.0 (v20)**: [Active] Map Graph Persistence, Protobuf Serialization, SoC Logic prep. (Main branch)
+- **v1.1.0 (v11)**: [Completed] Map Graph Persistence, Protobuf Serialization, high-speed ingestion. (Snapshot in `v1.x` branch)
 
 ---
 
@@ -109,6 +109,11 @@ The routing engine executes 5 distinct algorithms in parallel for every request,
 *   **The Issue**: Multiple algorithms often return the same optimal path, causing rendered polylines to overlap and disappear.
 *   **The Resolution**: Developed a **Pixel-Space Offset Engine** that bundles identical segments and applies dynamic offsets at `zoomend`, creating a "multi-lane" visualization.
 
+### 🛡️ v2.0.1 Stability Hotfixes (Latest)
+*   **Bi-Directional Regression**: Fixed edge-parity loss in Protobuf path; restored 100% search connectivity.
+*   **Cache Race Condition**: Extended mutex lock duration in C++ core to prevent dangling references during async search.
+*   **Hardcoded IDA* Logic**: Replaced 30 km/h hardcoded fallback with dynamic `max_speed * 0.5` pruning.
+
 ---
 
 ## 📈 Project Statistics
@@ -128,7 +133,7 @@ The routing engine executes 5 distinct algorithms in parallel for every request,
 
 ### **Phase 1: Foundation (Current)**
 *   **[COMPLETED] Step 1-3**: End-to-end pipeline, Comparison suite, L3 complexity.
-*   **[UPCOMING] Step 4**: Map Graph Persistence (Caching) & Protobuf Serialization for sub-100ms ingestion.
+*   **[COMPLETED] Step 4**: Map Graph Persistence (Caching) & Protobuf Serialization for sub-100ms ingestion.
 
 ### **Phase 2: ML & L4 Complexity (Planned)**
 *   **Step 5**: Multi-Objective EV Physics (SoC Constraints, rolling resistance).
@@ -166,13 +171,31 @@ Create a `.env` in the root directory (using `.env.example` as a template) and c
 
 ### 4. Running the System
 ```bash
-# Start Routing Engine (Terminal 1)
-cd modules/routing_engine && python3 server.py
+# Start Valkey/Redis (Terminal 1)
+cd modules/cache && valkey-server --daemonize yes
 
-# Start Backend (Terminal 2)
+# Start Routing Engine (Terminal 2)
+cd modules/routing_engine && python3 server.py
+# For Algo Debug Mode
+# ALGO_DEBUG=true python server.py
+
+# Start Backend (Terminal 3)
 cd modules/backend && npm run dev
 ```
-Navigate to `http://localhost:3000` to start planning.
+Navigate to `http://localhost:5500` to start planning.
 
+### 5. Reset System for CLean Run
+```bash
+# Clear Valkey/Redis
+cd modules/cache && valkey-cli FLUSHALL
+
+# Clear MongoDB
+cd modules/database && npm run reset
+
+# Clear C++ Cache
+cd modules/routing_engine
+## Press Ctrl+C to stop the server
+python server.py
+```
 ---
 *Refer to individual `modules/<name>/README.md` for deep-dive technical specs.*

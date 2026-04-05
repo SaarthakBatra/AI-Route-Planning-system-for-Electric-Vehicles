@@ -1,7 +1,14 @@
 /**
  * @file logger.js
  * @module backend/utils/logger
- * @description High-performance logging utility with request-based buffering and disk-sync.
+ * @description High-performance logging utility with request-based buffering and disk-synchronization.
+ * Supports cross-module log consolidation (Backend, Cache, Database) for a unified tracing experience.
+ * 
+ * @workflow
+ * 1. Initialize output directory and maintain module-level buffering.
+ * 2. Utilize AsyncLocalStorage (context.js) to isolate logs per request.
+ * 3. Support "Log Flushes" on request completion or process signals (SIGINT/SIGTERM).
+ * 4. Export a common logger interface (info, error, warn, debug).
  */
 const fs = require('fs');
 const path = require('path');

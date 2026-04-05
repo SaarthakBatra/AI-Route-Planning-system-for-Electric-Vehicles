@@ -3,6 +3,12 @@
  * @module backend/utils/uid
  * @description Persistent Request ID (UID) generator using directory-based atomicity.
  * Manages an incremental integer UID stored as a filename in the Output/ directory.
+ * 
+ * @workflow
+ * 1. Initialize the Output/ directory.
+ * 2. Scan for 'counter.{N}.txt' filename to find the current state.
+ * 3. Use fs.renameSync to atomically increment the counter.
+ * 4. Return the unique integer N for indexing and session logging.
  */
 const fs = require('fs');
 const path = require('path');

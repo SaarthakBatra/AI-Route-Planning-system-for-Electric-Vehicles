@@ -81,11 +81,45 @@ sequenceDiagram
 | `ROUTING_MAX_NODES` | `1,000,000` | Circuit breaker for node expansion. |
 | `ALGO_DEBUG` | `false` | Deep step-by-step Markdown tracing. |
 | `DEBUG_MODE` | `false` | Dummy tracer for gRPC testing. |
-| `GRPC_MAX_MESSAGE_SIZE` | `50MB` | Payload limit for large OSM maps. |
-| `ROUTING_IDA_BANDING_SHORTEST` | `10.0m` | IDA* threshold jump (meters). |
-| `ROUTING_IDA_BANDING_FASTEST` | `1.0s` | IDA* threshold jump (seconds). |
+| `GRPC_MAX_MESSAGE_SIZE` | `100MB` | Payload limit for large OSM maps. |
+| `ROUTING_IDA_BANDING_SHORTEST` | `1.0m` | IDA* threshold jump (meters). |
+| `ROUTING_IDA_BANDING_FASTEST` | `0.1s` | IDA* threshold jump (seconds). |
+| `GRAPH_CACHE_MAX_SIZE` | `20` | Max number of cached Graph regions. |
 
-## 🐞 Bugs & Resolutions
+## 6. Failure Signature Protocol (v2.0.4)
+
+To ensure the frontend can detect and visualize search failures (e.g., circuit breaker hits), the engine returns a standardized **Failure Signature**:
+
+- **Nodes Expanded**: `ROUTING_MAX_NODES + 1`
+- **Distance/Duration**: `0.0`
+- **Polyline**: Empty `[]`
+- **Flag**: `circuit_breaker_triggered = true`
+
+This triggers a **"LIMIT EXCEEDED"** badge in the UI and red-themed glassmorphism in toast notifications.
+
+## 7. Version History & Updates
+
+### v2.0.4 (Current)
+- **Quality Guardian**: Implemented Failure Signature protocol across all 5 algorithms.
+- **Robustness**: Added NaN/Inf weight validation for dynamic ingestion.
+- **Doc**: Full Doxygen/PEP257 comment coverage.
+
+### v2.0.3
+- **Observability**: Added `debug_logs` and `circuit_breaker_triggered` to gRPC payload.
+- **Diagnostics**: Synchronized A* step-by-step logs.
+
+### v2.0.2
+- **Optimization**: Implemented **Iterative Adaptive Banding** with 1.5x geometric overshoot for IDA*.
+- **Performance**: Eliminated hardcoded fallbacks in pruning logic.
+
+### v2.0.1
+- **Integrity**: Restored 1:1 bi-directional edge parity in Protobuf ingestion.
+- **Stability**: Fixed thread-safety race condition in graph cache.
+
+### v2.0.0
+- **Migration**: Transitioned to **Protobuf-First Ingestion** (`map_data_pb`).
+- **Persistence**: Implemented thread-safe C++ LRU **Graph Cache**.
+
 
 | Issue | Root Cause | Resolution |
 | :--- | :--- | :--- |
@@ -94,22 +128,23 @@ sequenceDiagram
 | **gRPC Message Exhaustion** | 50k+ Node maps exceeding 4MB default. | Increased `GRPC_MAX_MESSAGE_SIZE` to **100MB** in `server.py`. |
 | **NameError: grpc** | Dependency accidentally dropped during refactoring. | Restored `import grpc` and verified via Quality Guardian protocol. |
 
-## 6. Build and Lifecycle
+## 8. Build and Lifecycle
 
-### 6.1 Build C++ Core
+### 8.1 Build C++ Core
 ```bash
 python3 setup.py build_ext --inplace
 ```
 
-### 6.2 Run Tests
+### 8.2 Run Tests
 ```bash
 pytest tests/routing_engine/test_server.py
 ```
 
-### 6.3 Start Server
-```bash
-python3 server.py
-```
+### 8.3 Performance Targets
+- **Ingestion Latency**: < 100ms (Cache Hit), < 500ms (Cache Miss/Parse).
+- **Search Latency**: < 500ms for 20k node maps.
+- **Memory Footprint**: < 200MB per cached region.
+
 
 ## 7. System Integration & Use Cases
 
