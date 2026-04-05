@@ -2,8 +2,15 @@
 
 An industrial-grade, multi-objective EV route planning system utilizing a high-performance C++/Python routing engine, Node.js orchestration, and a modern Leaflet-based frontend.
 
-## 🚀 Status: Stage 3 Complete ✅
-The project has successfully transitioned from a "Tracer Bullet" to a comprehensive **Academic Search Suite (Level 3 Complexity)**. The system now supports dynamic geographic ingestion, comparative pathfinding across 5 algorithms, and real-time performance benchmarking.
+## 🚀 Status: Stage 4 - Memory-Speed Ingestion & Scaling (v2.0.0) - IN PROGRESS
+The project has successfully transitioned from the **Academic Search Suite (v1.0)** to the **High-Performance Scaling & Persistence (v2.0)** phase. We are currently focusing on eliminating gRPC latency via Graph Persistence and Protobuf serialization.
+
+---
+
+## 🕒 Version History
+
+- **v1.0.0 (v10)**: [Completed] 5 Academic Search algorithms, Dynamic OSM ingestion, L3 traffic complexity. (Snapshot in `v1.x` branch)
+- **v2.0.0 (v20)**: [Active] Map Graph Persistence, Protobuf Serialization, SoC Logic prep. (Main branch)
 
 ---
 

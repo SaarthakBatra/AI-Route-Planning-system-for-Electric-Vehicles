@@ -1,6 +1,6 @@
 {
   "name": "database",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MongoDB/Mongoose database module for the AI Route Planner. Handles connection health and data persistence.",
   "main": "index.js",
   "directories": {
