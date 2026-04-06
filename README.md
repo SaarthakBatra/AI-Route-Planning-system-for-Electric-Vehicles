@@ -2,15 +2,16 @@
 
 An industrial-grade, multi-objective EV route planning system utilizing a high-performance C++/Python routing engine, Node.js orchestration, and a modern Leaflet-based frontend.
 
-## 🚀 Status: v1.1.0 - Snapshot Created (Stage 4 Complete)
-The project has successfully completed **Stage 4: Map Graph Persistence & Protobuf Serialization**. This state provides sub-100ms gRPC ingestion and is archived in the `v1.x` branch.
+## 🚀 Status: v2.0.0 - EV Physics & SoC Constraints (Stage 5) - IN PROGRESS
+The project has successfully reached **Stage 5: Multi-Objective EV Routing (L4 Complexity)**. We are currently implementing physics-based energy usage models and State-of-Charge (SoC) search bounds.
 
 ---
 
 ## 🕒 Version History
 
 - **v1.0.0 (v10)**: [Completed] 5 Academic Search algorithms, Dynamic OSM ingestion, L3 traffic complexity. (Snapshot in `v1.x` branch)
-- **v1.1.0 (v11)**: [Completed] Map Graph Persistence, Protobuf Serialization, high-speed ingestion. (Snapshot in `v1.x` branch)
+- **v1.1.0 (v11)**: [Completed] Map Graph Persistence, Protobuf Serialization for high-speed ingestion. (Snapshot in `v1.x` branch)
+- **v2.0.0 (v20)**: [Active] Multi-Objective EV Physics, SoC Constraints, Pareto-Optimal search. (Main branch)
 
 ---
 
@@ -136,7 +137,7 @@ The routing engine executes 5 distinct algorithms in parallel for every request,
 *   **[COMPLETED] Step 4**: Map Graph Persistence (Caching) & Protobuf Serialization for sub-100ms ingestion.
 
 ### **Phase 2: ML & L4 Complexity (Planned)**
-*   **Step 5**: Multi-Objective EV Physics (SoC Constraints, rolling resistance).
+*   **[ACTIVE] Step 5**: Multi-Objective EV Physics (SoC Constraints, rolling resistance).
 *   **Step 8**: Learned Heuristics (RL/GNN) to shrink search space asymptotically.
 
 ### **Phase 3: Cognitive Integration (Planned)**

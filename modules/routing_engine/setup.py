@@ -14,7 +14,7 @@ ext_modules = [
 
 setup(
     name='route_core',
-    version='1.1.0',
+    version='2.0.0',
     author='Antigravity',
     description='C++ Core engine for AI Route Planner',
     ext_modules=ext_modules,
