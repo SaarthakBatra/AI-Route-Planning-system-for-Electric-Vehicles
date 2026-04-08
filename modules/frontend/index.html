@@ -180,26 +180,28 @@
                             </div>
                         </div>
                     </details>
-                </div>
-
-                <!-- Trip Execution Panel (Hidden until route calculated) -->
-                <div id="trip-execution-panel" class="trip-execution-panel hidden glass-panel">
-                    <h3>Trip Execution Mode</h3>
-                    <div id="waypoint-logger" class="waypoint-logger">
-                        <p class="logger-instruction">Select waypoint on map to log actual SoC.</p>
-                        <div id="logger-inputs" class="logger-inputs hidden">
-                            <label for="actual-soc-input">Actual SoC at Waypoint:</label>
-                            <div class="input-with-action">
-                                <input type="number" id="actual-soc-input" placeholder="%" min="0" max="100">
-                                <button type="button" id="log-soc-btn" class="mini-btn">Log</button>
+                
+                    <!-- Trip Execution Mode (Collapsible, starts hidden) -->
+                    <details id="execution-panel" class="trip-execution-panel hidden">
+                        <summary>Trip Execution Mode</summary>
+                        <div class="collapsible-content">
+                            <div id="waypoint-logger" class="waypoint-logger">
+                                <p class="logger-instruction">Select waypoint on map to log actual SoC.</p>
+                                <div id="logger-inputs" class="logger-inputs hidden">
+                                    <label for="actual-soc-input">Actual SoC at Waypoint:</label>
+                                    <div class="input-with-action">
+                                        <input type="number" id="actual-soc-input" placeholder="%" min="0" max="100">
+                                        <button type="button" id="log-soc-btn" class="mini-btn">Log</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="deviation-readout" class="deviation-readout hidden">
+                                <span class="label">SoC Deviation:</span>
+                                <span id="deviation-value" class="value">0%</span>
+                                <button type="button" id="recompute-btn" class="recompute-btn hidden">Conservative Recompute</button>
                             </div>
                         </div>
-                    </div>
-                    <div id="deviation-readout" class="deviation-readout hidden">
-                        <span class="label">SoC Deviation:</span>
-                        <span id="deviation-value" class="value">0%</span>
-                        <button type="button" id="recompute-btn" class="recompute-btn hidden">Conservative Recompute</button>
-                    </div>
+                    </details>
                 </div>
 
                 <div id="status-message" class="status-msg hidden"></div>

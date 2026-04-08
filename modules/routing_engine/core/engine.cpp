@@ -71,6 +71,12 @@ struct Node {
 
 struct RoutePoint {
     double lat, lng, energy;
+    bool is_charging_stop = false;
+    std::string charger_type = "NONE";
+    double kw_output = 0.0;
+    bool is_operational = true;
+    double planned_soc_kwh = 0.0;
+    bool is_regen = false;
 };
 
 struct Edge {
@@ -286,7 +292,7 @@ static constexpr double AIR_DENSITY = 1.225;
  * @param p Physical parameters of the vehicle.
  * @return double Energy in kWh.
  */
-double calculate_ev_energy_kwh(double dist_m, double speed_mps, double grade_sin, const EVParams& p) {
+double calculate_ev_energy_kwh(double dist_m, double speed_mps, double grade_sin, const EVParams& p, bool& out_is_regen) {
     if (dist_m <= 0) return 0.0;
     
     double cos_theta = std::sqrt(1.0 - grade_sin * grade_sin);
@@ -314,9 +320,11 @@ double calculate_ev_energy_kwh(double dist_m, double speed_mps, double grade_sin
         // Convert back to Joules for this segment and apply efficiency
         double Work_Regen_Joules = -P_actual_regen * trip_duration_s * p.regen_efficiency;
         E_traction_kwh = Work_Regen_Joules / 3600000.0; 
+        out_is_regen = true; 
     } else {
         // Apply safety margin to positive traction consumption
         E_traction_kwh = (Work_Joules / 3600000.0) * (1.0 + p.energy_uncertainty_margin_pct / 100.0);
+        out_is_regen = false;
     }
     
     return E_traction_kwh + E_aux_kwh;
@@ -487,6 +495,7 @@ struct EdgeCost {
     double scalar_cost;
     double duration_s;
     double energy_kwh;
+    bool is_regen = false;
 };
 
 EdgeCost calculate_edge_costs(int u, int v, const Edge& edge, Objective objective, int mock_hour, const Graph& g, const EVParams& ev) {
@@ -499,7 +508,7 @@ EdgeCost calculate_edge_costs(int u, int v, const Edge& edge, Objective objectiv
     if (ev.enabled) {
         double el_diff = g.nodes[v].elevation - g.nodes[u].elevation;
         double grade_sin = (edge.weight_m > 0) ? std::min(1.0, std::max(-1.0, el_diff / edge.weight_m)) : 0.0;
-        ec.energy_kwh = calculate_ev_energy_kwh(edge.weight_m, speed_mps, grade_sin, ev);
+        ec.energy_kwh = calculate_ev_energy_kwh(edge.weight_m, speed_mps, grade_sin, ev, ec.is_regen);
         
         // Thermal Pre-conditioning spike if destination is DC Fast Charger
         if (g.nodes[v].is_charger && g.nodes[v].kw_output >= 50.0) {
@@ -594,6 +603,7 @@ AlgorithmResult reconstruct_path_from_states(const std::vector<SearchState>& sta
     for (size_t i = 0; i < path_states.size(); ++i) {
         int u = path_states[i].u;
         double seg_energy = 0.0;
+        bool is_regen_found = false;
 
         if (i > 0) {
             int p = path_states[i - 1].u;
@@ -602,6 +612,7 @@ AlgorithmResult reconstruct_path_from_states(const std::vector<SearchState>& sta
             if (path_states[i].is_charging_stop && u == p) {
                 seg_energy = -(path_states[i].soc - path_states[i-1].soc); // Negative consumption = gain
                 res.duration_s += (path_states[i].cost - path_states[i-1].cost);
+                res.consumed_kwh += seg_energy; // FIX: Tally charging energy gains
             } else {
                 for (const auto& edge : g.adjacency_list[p]) {
                     if (edge.to == u) {
@@ -611,12 +622,25 @@ AlgorithmResult reconstruct_path_from_states(const std::vector<SearchState>& sta
                         res.duration_s += ec.duration_s;
                         res.consumed_kwh += ec.energy_kwh;
                         seg_energy = ec.energy_kwh;
+                        is_regen_found = ec.is_regen;
                         break;
                     }
                 }
             }
         }
-        res.path.push_back({g.nodes[u].lat, g.nodes[u].lng, seg_energy});
+        
+        RoutePoint pt = {g.nodes[u].lat, g.nodes[u].lng, seg_energy};
+        pt.is_charging_stop = path_states[i].is_charging_stop;
+        pt.planned_soc_kwh = path_states[i].soc;
+        pt.is_regen = is_regen_found;
+        
+        if (pt.is_charging_stop) {
+            pt.charger_type = g.nodes[u].charger_type;
+            pt.kw_output = g.nodes[u].kw_output;
+            pt.is_operational = g.nodes[u].is_operational;
+        }
+        
+        res.path.push_back(pt);
     }
     
     if (ev.enabled) {
@@ -953,7 +977,12 @@ AlgorithmResult run_dijkstra(int start, int end, Objective obj, int hour, const 
                     if (f.first > soc_bin || f.second < c) { dominated = true; break; }
                 }
             }
-            if (dominated && u != start) continue;
+            if (dominated && u != start) {
+                if (debug_enabled) {
+                    oss << "[PARETO_PRUNE] Node: " << g.nodes[u].id << " SoC Bin: " << soc_bin << " | Cost: " << c << " Dominated by front\n";
+                }
+                continue;
+            }
         }
 
         nodes_expanded++;

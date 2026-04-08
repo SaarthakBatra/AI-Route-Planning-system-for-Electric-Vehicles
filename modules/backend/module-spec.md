@@ -66,7 +66,15 @@ To prevent configuration poisoning, the Backend module adheres to the following 
 - **Response Schema**:
     - Returns a `success: true` envelope containing an array of algorithm results.
     - **EV Metrics**: Each result includes `arrival_soc_kwh`, `consumed_kwh`, and `is_charging_stop`.
-    - **High-Fidelity Polyline**: Each coordinate in the `polyline` array includes `segment_consumed_kwh` (kWh).
+    - **High-Fidelity Polyline**: Each coordinate in the `polyline` array includes:
+        - `segment_consumed_kwh`: Physical energy delta (kWh).
+        - `planned_soc_kwh`: Absolute battery state (kWh).
+        - `planned_soc_pct`: Capacity-relative state (%).
+        - `is_charging_stop`: Boolean.
+        - `is_regen`: Boolean (Regenerative traction active).
+        - `charger_type`: e.g. "DC_FAST".
+        - `kw_output`: Maximum charger power.
+        - `is_operational`: Safety/availability flag.
     - **Standardized Failure Signature**: If an algorithm hits a circuit breaker (via `circuit_breaker_triggered: true` or exceeding `ALGO_MAX_NODES`), it returns:
         - `polyline: []`
         - `distance: 0`, `duration: 0`, `path_cost: 0`

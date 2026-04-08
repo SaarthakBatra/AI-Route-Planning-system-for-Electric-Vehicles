@@ -53,7 +53,14 @@ const mapAlgoResult = (res, maxNodes, logDir, effectiveCapacityKwh) => {
         polyline: isBreakerHit ? [] : (res.polyline || []).map(coord => ({
             lat: coord.lat,
             lng: coord.lng,
-            segment_consumed_kwh: coord.segment_consumed_kwh || 0
+            segment_consumed_kwh: coord.segment_consumed_kwh || 0,
+            is_charging_stop: !!coord.is_charging_stop,
+            is_regen: !!coord.is_regen,
+            charger_type: coord.charger_type || 'NONE',
+            kw_output: coord.kw_output || 0,
+            is_operational: coord.is_operational !== false,
+            planned_soc_kwh: coord.planned_soc_kwh || 0,
+            planned_soc_pct: effectiveCapacityKwh > 0 ? (coord.planned_soc_kwh / effectiveCapacityKwh) * 100 : 0
         })),
         distance: isBreakerHit ? 0 : (res.distance || 0),
         duration: isBreakerHit ? 0 : (res.duration || 0),

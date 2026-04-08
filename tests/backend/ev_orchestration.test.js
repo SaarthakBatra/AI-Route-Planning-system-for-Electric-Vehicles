@@ -115,6 +115,31 @@ describe('Stage 5 EV Orchestration', () => {
         expect(result.is_charging_stop).toBe(true);
     });
 
+    it('should calculate planned_soc_pct correctly relative to effective capacity', async () => {
+        calculateRouteGrpc.mockResolvedValue({
+            results: [{
+                algorithm: 'A*',
+                polyline: [
+                    { lat: 10, lng: 10, planned_soc_kwh: 30.0 }
+                ],
+                nodes_expanded: 100
+            }]
+        });
+
+        const response = await request(app)
+            .post('/api/routes/calculate')
+            .send({
+                start: { lat: 0, lng: 0 },
+                end: { lat: 1, lng: 1 },
+                vehicle_id: 'tesla_model_3', // Capacity: 75kWh
+                battery_soh_pct: 80         // Effective Capacity: 60kWh
+            });
+
+        const result = response.body.data.results[0];
+        // 30 / 60 * 100 = 50%
+        expect(result.polyline[0].planned_soc_pct).toBe(50);
+    });
+
     it('should default to standard_ev profile when ev_routing is true but vehicle_id is missing', async () => {
         calculateRouteGrpc.mockResolvedValue({ results: [] });
 

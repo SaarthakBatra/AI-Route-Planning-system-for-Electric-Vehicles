@@ -9,6 +9,12 @@ namespace py = pybind11;
 // Forward declarations
 struct RoutePoint {
     double lat, lng, energy;
+    bool is_charging_stop = false;
+    std::string charger_type = "NONE";
+    double kw_output = 0.0;
+    bool is_operational = true;
+    double planned_soc_kwh = 0.0;
+    bool is_regen = false;
 };
 
 struct AlgorithmResult {
@@ -87,7 +93,13 @@ PYBIND11_MODULE(route_core, m) {
     py::class_<RoutePoint>(m, "RoutePoint")
         .def_readonly("lat", &RoutePoint::lat)
         .def_readonly("lng", &RoutePoint::lng)
-        .def_readonly("energy", &RoutePoint::energy);
+        .def_readonly("energy", &RoutePoint::energy)
+        .def_readonly("is_charging_stop", &RoutePoint::is_charging_stop)
+        .def_readonly("charger_type", &RoutePoint::charger_type)
+        .def_readonly("kw_output", &RoutePoint::kw_output)
+        .def_readonly("is_operational", &RoutePoint::is_operational)
+        .def_readonly("planned_soc_kwh", &RoutePoint::planned_soc_kwh)
+        .def_readonly("is_regen", &RoutePoint::is_regen);
 
     // Bind the AlgorithmResult struct
     py::class_<AlgorithmResult>(m, "AlgorithmResult")

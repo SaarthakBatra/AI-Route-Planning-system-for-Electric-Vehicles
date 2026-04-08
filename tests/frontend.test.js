@@ -152,14 +152,14 @@ try {
     // Restore state
     mockState['mission-charge-bound'].value = '50.5';
 
-    // Test 6: Polyline Segmentation Logic
+    // Test 6: Polyline Segmentation Logic (v2.5.1 Flag-Based)
     assert.strictEqual(typeof appCode.splitPolylineIntoSegments, 'function', "splitPolylineIntoSegments should exist");
     
     const mockPolyline = [
-        { lat: 10, lng: 20, segment_consumed_kwh: 0.5 },
-        { lat: 11, lng: 21, segment_consumed_kwh: 0.5 },
-        { lat: 12, lng: 22, segment_consumed_kwh: -0.2 }, // Transition to regen
-        { lat: 13, lng: 23, segment_consumed_kwh: -0.1 }
+        { lat: 10, lng: 20, is_regen: false, segment_consumed_kwh: 0.5, planned_soc_pct: 80 },
+        { lat: 11, lng: 21, is_regen: false, segment_consumed_kwh: 0.5, planned_soc_pct: 79 },
+        { lat: 12, lng: 22, is_regen: true,  segment_consumed_kwh: -0.2, planned_soc_pct: 79.2 }, // Transition to regen
+        { lat: 13, lng: 23, is_regen: true,  segment_consumed_kwh: -0.1, planned_soc_pct: 79.3 }
     ];
     const mockLatLngs = [[10, 20], [11, 21], [12, 22], [13, 23]];
     

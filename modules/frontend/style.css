@@ -668,20 +668,29 @@ input:checked + .slider:before {
     font-size: 0.8rem;
 }
 
-/* Trip Execution Panel */
+/* Trip Execution Panel (Integrated) */
 .trip-execution-panel {
-    position: absolute;
-    bottom: 30px;
-    right: 20px;
-    width: 320px;
-    padding: 20px;
-    background: rgba(30, 30, 40, 0.85) !important;
+    margin-top: 15px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding-top: 10px;
+    background: transparent !important; /* Inherit from ui-panel */
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
 }
 
-.trip-execution-panel h3 {
-    font-size: 1rem;
+.trip-execution-panel summary {
+    font-size: 0.9rem;
+    font-weight: 600;
     color: #FBBF24;
-    margin-bottom: 12px;
+    cursor: pointer;
+    outline: none;
+    padding: 5px 0;
+    transition: color 0.2s;
+}
+
+.trip-execution-panel summary:hover {
+    color: #ffffff;
 }
 
 .logger-instruction {
@@ -720,25 +729,73 @@ input:checked + .slider:before {
     margin-top: 10px;
 }
 
-/* Charger Marker Ontology */
+/* Charger Marker Ontology (SVG compatible for Leaflet circleMarker) */
 .charger-icon {
-    border-radius: 50%;
-    border: 2px solid white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    stroke-width: 2px;
+    stroke: #ffffff;
+    filter: drop-shadow(0 0 4px rgba(0,0,0,0.5));
 }
 
-.charger-icon.fast { background-color: #FBBF24; } /* Yellow */
-.charger-icon.unknown { background-color: #3B82F6; } /* Blue */
-.charger-icon.emergency { 
-    background-color: #FBBF24; 
+.charger-icon.fast        { fill: #FBBF24; } /* Yellow */
+.charger-icon.unknown     { fill: #3B82F6; } /* Blue */
+.charger-icon.emergency   { fill: #FBBF24; stroke-dasharray: 0; } /* Yellow */
+.charger-icon.offline     { fill: #9CA3AF; opacity: 0.6; filter: grayscale(100%); } /* Grey */
+.charger-icon.incompatible { fill: #EF4444; } /* Red */
+
+/* Map Legend */
+.map-legend {
+    padding: 12px;
+    background: rgba(30, 30, 40, 0.85);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: #e0e0e0;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    pointer-events: auto;
+}
+
+.map-legend h4 {
+    margin-bottom: 8px;
+    color: #4CAF50;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.legend-symbol {
+    width: 20px;
+    height: 12px;
+    display: inline-block;
+    border-radius: 2px;
+}
+
+.legend-symbol.solid { border-bottom: 2px solid #3B82F6; }
+.legend-symbol.dashed { border-bottom: 2px dashed #4CAF50; height: 6px; }
+
+.legend-marker {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1px solid white;
+}
+
+.legend-marker.yellow { background: #FBBF24; }
+.legend-marker.blue   { background: #3B82F6; }
+.legend-marker.grey   { background: #9CA3AF; }
+.legend-marker.triangle { 
+    border-radius: 0; 
     clip-path: polygon(50% 0%, 0% 100%, 100% 100%); 
-    border-radius: 0;
-} /* Yellow Triangle */
-.charger-icon.offline { background-color: #9CA3AF; } /* Grey */
-.charger-icon.incompatible { background-color: #EF4444; } /* Red */
+    background: #FBBF24;
+}
 
 /* Animations */
 @keyframes slideDown {

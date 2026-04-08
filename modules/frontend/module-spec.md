@@ -72,12 +72,17 @@
 }
 ```
 
-#### AlgorithmResult Extensions (Stage 5)
+#### AlgorithmResult Extensions (Stage 5 / v2.5.1)
 | Property | Type | Description |
 | :--- | :--- | :--- |
-| `arrival_soc_kwh` | `number` | Estimated SoC at destination. |
+| `arrival_soc_pct` | `number` | Estimated SoC% at arrival (Backend Ground Truth). |
 | `consumed_kwh` | `number` | Total energy used. |
-| `polyline` | `Array` | Coordinate pairs, some flagged with `is_charging_stop`. |
+| `polyline` | `Array` | Coordinate objects containing `is_regen`, `is_charging_stop`, `planned_soc_pct`, and `kw_output`. |
+| `proximity_warning` | `boolean` | Flag for low-arrival SOC critical alerts. |
+
+### Core Logic Formulas
+- **Wait Time (mins)**: `(Math.abs(segment_consumed_kwh) / kw_output) * 60`
+- **SoC Deviation**: `((actual_soc_kwh - planned_soc_kwh) / effective_capacity_kwh) * 100`
 
 ## 3. Verification
 

@@ -82,14 +82,32 @@ describe('POST /api/routes/calculate (v2.3.0 Sync)', () => {
         expect(result.debug_logs).toContain('Algo_Dijkstra.md');
     });
 
-    it('should propagate segment_consumed_kwh in polyline coordinates', async () => {
+    it('should propagate v2.5.1 metadata in polyline coordinates', async () => {
         calculateRouteGrpc.mockResolvedValue({
             results: [
                 {
                     algorithm: 'AStar',
                     polyline: [
-                        { lat: 40.7128, lng: -74.0060, segment_consumed_kwh: 0.05 },
-                        { lat: 40.7306, lng: -73.9866, segment_consumed_kwh: 0.08 }
+                        { 
+                            lat: 40.7128, lng: -74.0060, 
+                            segment_consumed_kwh: 0.05, 
+                            is_charging_stop: false,
+                            is_regen: false,
+                            charger_type: 'NONE',
+                            kw_output: 0,
+                            is_operational: true,
+                            planned_soc_kwh: 50.0
+                        },
+                        { 
+                            lat: 40.7306, lng: -73.9866, 
+                            segment_consumed_kwh: -0.02, 
+                            is_charging_stop: true,
+                            is_regen: true,
+                            charger_type: 'DC_FAST',
+                            kw_output: 50,
+                            is_operational: true,
+                            planned_soc_kwh: 50.02
+                        }
                     ],
                     nodes_expanded: 100
                 }
@@ -100,14 +118,31 @@ describe('POST /api/routes/calculate (v2.3.0 Sync)', () => {
             .post('/api/routes/calculate')
             .send({
                 start: { lat: 0, lng: 0 },
-                end: { lat: 1, lng: 1 }
+                end: { lat: 1, lng: 1 },
+                vehicle_id: 'tesla_model_3',
+                battery_soh_pct: 100 // Cap: 75kWh
             });
 
         expect(response.status).toBe(200);
         const result = response.body.data.results[0];
         expect(result.polyline).toHaveLength(2);
-        expect(result.polyline[0]).toHaveProperty('segment_consumed_kwh', 0.05);
-        expect(result.polyline[1]).toHaveProperty('segment_consumed_kwh', 0.08);
+        
+        // Point 1
+        expect(result.polyline[0]).toMatchObject({
+            segment_consumed_kwh: 0.05,
+            is_charging_stop: false,
+            is_regen: false,
+            planned_soc_pct: 50 / 75 * 100
+        });
+
+        // Point 2
+        expect(result.polyline[1]).toMatchObject({
+            is_charging_stop: true,
+            is_regen: true,
+            charger_type: 'DC_FAST',
+            kw_output: 50,
+            planned_soc_pct: 50.02 / 75 * 100
+        });
     });
 
     it('should maintain legacy behavior if no truncation marker is present', async () => {

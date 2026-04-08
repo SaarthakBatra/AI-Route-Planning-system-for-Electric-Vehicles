@@ -235,6 +235,12 @@ class RouteServiceServicer(route_engine_pb2_grpc.RouteServiceServicer):
                     p = rb.polyline.add()
                     p.lat, p.lng = pt.lat, pt.lng
                     p.segment_consumed_kwh = pt.energy
+                    p.is_charging_stop = pt.is_charging_stop
+                    p.charger_type = pt.charger_type
+                    p.kw_output = pt.kw_output
+                    p.is_operational = pt.is_operational
+                    p.planned_soc_kwh = pt.planned_soc_kwh
+                    p.is_regen = pt.is_regen
             
             return response
 

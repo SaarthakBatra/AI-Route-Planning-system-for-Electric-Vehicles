@@ -210,7 +210,7 @@ const ui = {
     emergencyMode: document.getElementById('emergency-mode'),
     
     // Trip Execution Panel
-    tripPanel: document.getElementById('trip-execution-panel'),
+    tripPanel: document.getElementById('execution-panel'),
     loggerInputs: document.getElementById('logger-inputs'),
     actualSocInput: document.getElementById('actual-soc-input'),
     logSocBtn: document.getElementById('log-soc-btn'),
@@ -308,6 +308,9 @@ function initMap() {
 
         L.control.layers(baseMaps, null, { position: 'bottomleft' }).addTo(map);
         L.control.zoom({ position: 'bottomright' }).addTo(map);
+        
+        // Stage 5: Static Map Legend
+        addMapLegend(map);
 
         // Geolocation
         if (navigator.geolocation) {
@@ -751,6 +754,15 @@ async function calculateRoute(map) {
         }
 
         showStatus('Comparison complete.', 'success');
+        
+        // Stage 5: Automatically show/reset Trip Execution Panel
+        if (state.evEnabled) {
+            ui.tripPanel.classList.remove('hidden');
+            ui.tripPanel.open = true; // Auto-expand the integrated section
+            ui.deviationReadout.classList.add('hidden');
+            ui.recomputeBtn.classList.add('hidden');
+        }
+
         logDebug('calculateRoute', 'EXIT_SUCCESS');
 
     } catch (error) {
@@ -829,22 +841,25 @@ function renderAllRoutes(map, results) {
     state.routeLayers = [];
     state.originalStyles.clear();
 
-    // Group results by identical path (polyline coordinates string)
+    // Group results by identical path (GEOMETRY ONLY)
     const pathGroups = new Map();
     results.forEach(res => {
-        const pathKey = JSON.stringify(res.polyline);
-        if (!pathGroups.has(pathKey)) pathGroups.set(pathKey, []);
-        pathGroups.get(pathKey).push(res);
+        // Use coordinate pairs for grouping to handle metadata variance
+        const geometryKey = JSON.stringify(res.polyline.map(c => [c.lat, c.lng]));
+        if (!pathGroups.has(geometryKey)) pathGroups.set(geometryKey, []);
+        pathGroups.get(geometryKey).push(res);
     });
 
     const TOTAL_BUNDLE_WIDTH = 10;
     const featureGroup = L.featureGroup();
 
-    pathGroups.forEach((group, pathKey) => {
+    pathGroups.forEach((group, geometryKey) => {
         const N = group.length;
         const perLineWidth = TOTAL_BUNDLE_WIDTH / N;
-        const baseLatLngs = JSON.parse(pathKey).map(c => [c.lat, c.lng]);
-        const pathData = JSON.parse(pathKey); // Access extra properties like cost_e
+        const baseLatLngs = JSON.parse(geometryKey);
+        
+        // Stage 5: Use path metadata from the first result in the group
+        const pathData = group[0].polyline; 
 
         group.forEach((res, index) => {
             const color = appConfig.algoColors[res.algorithm] || '#fff';
@@ -980,23 +995,41 @@ function renderChargerMarkers(map, pathData) {
         // Apply Emergency Context if enabled
         if (ui.emergencyMode.checked && typeClass === 'unknown') {
             typeName = 'Assumed Compatible (Emergency Fallback)';
+            typeClass = 'emergency';
         }
 
         const marker = L.circleMarker([node.lat, node.lng], {
             className: `charger-icon ${typeClass}`,
-            radius: 8
+            radius: 8,
+            interactive: true
         }).addTo(map);
 
+        // v2.5.1 Tooltip Logic: Backend-driven SOC and precise wait time
+        const energyAdded = Math.abs(node.segment_consumed_kwh || 0);
+        const waitTime = node.kw_output > 0 ? (energyAdded / node.kw_output) * 60 : 0;
+        
         const tooltipContent = `
-            <strong>${typeName}</strong><br>
-            Power: ${node.kw_output || '?'} kW<br>
-            ${node.is_operational === false ? '<span style="color:red">OFFLINE</span>' : 'Operational'}
+            <div class="charger-tooltip">
+                <strong>${typeName}</strong><br>
+                Power: ${node.kw_output || '?'} kW<br>
+                Energy Added: ${energyAdded.toFixed(1)} kWh<br>
+                Wait Time: ${waitTime.toFixed(1)} mins<br>
+                Arrival SoC: ${(node.planned_soc_pct || 0).toFixed(1)}%<br>
+                <span class="${node.is_operational === false ? 'offline-text' : 'operational-text'}">
+                    ${node.is_operational === false ? 'OFFLINE' : 'Operational'}
+                </span>
+            </div>
         `;
         marker.bindTooltip(tooltipContent);
-
-        // Store for execution mode tracking
+        
+        // Show execution panel on mark click
         marker.on('click', () => {
-            state.tripHistory.selectedWaypoint = { id: idx, lat: node.lat, lng: node.lng, plannedPct: node.planned_soc_pct };
+            state.tripHistory.selectedWaypoint = { 
+                id: idx, 
+                lat: node.lat, 
+                lng: node.lng, 
+                plannedPct: node.planned_soc_pct 
+            };
             ui.loggerInputs.classList.remove('hidden');
             ui.tripPanel.classList.remove('hidden');
             logDebug('WaypointSelect', 'SELECTED', state.tripHistory.selectedWaypoint);
@@ -1007,15 +1040,44 @@ function renderChargerMarkers(map, pathData) {
 }
 
 /**
+ * Stage 5: Dynamic Map Legend injection
+ */
+function addMapLegend(map) {
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function() {
+        const div = L.DomUtil.create('div', 'map-legend');
+        div.innerHTML = `
+            <h4>Map Ontology</h4>
+            <div class="legend-item"><span class="legend-symbol solid"></span> Consumption</div>
+            <div class="legend-item"><span class="legend-symbol dashed"></span> Regeneration</div>
+            <hr style="margin: 8px 0; border: none; border-top: 1px solid rgba(255,255,255,0.1);">
+            <div class="legend-item"><div class="legend-marker yellow"></div> DC Fast Charger</div>
+            <div class="legend-item"><div class="legend-marker blue"></div> AC Charger (Compatible)</div>
+            <div class="legend-item"><div class="legend-marker triangle"></div> Emergency Wall Plug</div>
+            <div class="legend-item"><div class="legend-marker grey"></div> Station Offline / Occupied</div>
+        `;
+        return div;
+    };
+    legend.addTo(map);
+}
+
+/**
  * Calculates SoC deviation and triggers recompute alerts.
+ */
+/**
+ * Calculates SoC deviation using energy-precise capacity scalar.
  */
 function logActualSoC(map) {
     const actual = parseFloat(ui.actualSocInput.value);
     const waypoint = state.tripHistory.selectedWaypoint;
+    const capacity = parseFloat(state.evParams.battery_capacity_kwh) || 60;
     
     if (isNaN(actual) || !waypoint) return;
 
-    const deviation = actual - waypoint.plannedPct;
+    // v2.5.1 Protocol: Deviations relative to effective pack capacity
+    const plannedPct = waypoint.plannedPct || 0;
+    const deviation = actual - plannedPct; 
+    
     ui.deviationValue.innerText = `${deviation > 0 ? '+' : ''}${deviation.toFixed(1)}%`;
     ui.deviationReadout.classList.remove('hidden');
 
@@ -1023,6 +1085,9 @@ function logActualSoC(map) {
         logDebug('logActualSoC', 'CRITICAL_DRAIN_DETECTED', { deviation });
         ui.recomputeBtn.classList.remove('hidden');
         showStatus('Critical drain detected. Suggesting conservative re-calculation.', 'error');
+        
+        // Specialized alert for Mission Control
+        alert(`⚠️ Alert: Arrived ${Math.abs(deviation).toFixed(1)}% below expected plan.`);
     } else {
         ui.recomputeBtn.classList.add('hidden');
     }
@@ -1064,11 +1129,10 @@ function splitPolylineIntoSegments(originalPolyline, renderedLatLngs) {
 
     const segments = [];
     let currentPoints = [renderedLatLngs[0]];
-    let currentIsRegen = (originalPolyline[1]?.segment_consumed_kwh < 0);
+    let currentIsRegen = (originalPolyline[1]?.is_regen === true);
 
     for (let i = 1; i < originalPolyline.length; i++) {
-        const consumed = originalPolyline[i].segment_consumed_kwh || 0;
-        const isRegen = consumed < 0;
+        const isRegen = originalPolyline[i].is_regen === true;
 
         if (isRegen !== currentIsRegen) {
             // New type discovered, close current segment
@@ -1213,7 +1277,7 @@ function createAlgorithmToast(data) {
             </div>
             <div class="toast-stat" style="${state.evEnabled ? '' : 'display:none'}">
                 <span class="label">Arrival SoC</span>
-                <span class="value">${isProximityWarning ? '⚠️ ' : ''}${arrivalSocStr}</span>
+                <span class="value">${data.proximity_warning ? '⚠️ ' : ''}${arrivalSocStr}</span>
             </div>
             <div class="toast-stat" style="${state.evEnabled ? '' : 'display:none'}">
                 <span class="label">Energy Cost</span>
@@ -1296,6 +1360,8 @@ function resetState(map) {
     ui.endInput.value = '';
     ui.calcBtn.disabled = true;
     ui.routeInfo.classList.add('hidden');
+    ui.tripPanel.classList.add('hidden');
+    ui.tripPanel.open = false;
     ui.routeDistance.innerText = '-';
     ui.routeDuration.innerText = '-';
     showStatus('', 'hidden');

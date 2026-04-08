@@ -406,5 +406,96 @@ class TestEVRouting(unittest.TestCase):
                 self.assertLess(gain, 0, f"Algorithm {res.algorithm} failed to track regen gain: {gain}")
         print("[REGEN] Downhill Tracking: Success")
 
+    def test_physical_unit_assertion(self):
+        """Bug 1: Verify energy for a 100m flat edge at 50km/h (v2.5.1).
+        Expected: ~0.008 kWh based on physical reality audit.
+        """
+        payload = route_engine_pb2.MapPayload()
+        n0 = payload.nodes.add(); n0.id, n0.lat, n0.lng, n0.elevation = 0, 45.0, 9.0, 0.0
+        n1 = payload.nodes.add(); n1.id, n1.lat, n1.lng, n1.elevation = 1, 45.0009, 9.0, 0.0
+        e = payload.edges.add(); e.u, e.v, e.weight_m, e.speed_kmh = 0, 1, 100, 50
+        
+        request = route_engine_pb2.RouteRequest()
+        request.start.lat, request.start.lng = 45.0, 9.0
+        request.end.lat, request.end.lng = 45.0009, 9.0
+        request.map_data_pb = payload.SerializeToString()
+        request.ev_params.enabled = True
+        request.ev_params.effective_mass_kg = 2206
+        request.ev_params.Crr = 0.012
+        request.ev_params.drag_coeff = 0.23
+        request.ev_params.frontal_area_m2 = 2.22
+        request.ev_params.aux_power_kw = 0.5
+        request.ev_params.start_soc_kwh = 60.0
+        
+        response = self.stub.CalculateRoute(request)
+        for res in response.results:
+            if res.algorithm in ["BFS", "Dijkstra", "A*"]:
+                # 32,000 Joules / 3,600,000 + Aux load
+                # Expected roughly 0.008 to 0.010 kWh
+                self.assertGreater(res.consumed_kwh, 0.007, f"Algorithm {res.algorithm} units too small: {res.consumed_kwh}")
+                self.assertLess(res.consumed_kwh, 0.015, f"Algorithm {res.algorithm} units too large: {res.consumed_kwh}")
+        print("[PHYSICS] Unit Assertion: Success")
+
+    def test_regen_with_hvac_offset(self):
+        """Bug B: Verify is_regen is true even if HVAC swallows the gain (v2.5.1)."""
+        payload = route_engine_pb2.MapPayload()
+        n0 = payload.nodes.add(); n0.id, n0.lat, n0.lng, n0.elevation = 0, 45.0, 9.0, 10.0
+        n1 = payload.nodes.add(); n1.id, n1.lat, n1.lng, n1.elevation = 1, 45.0001, 9.0, 0.0 # Small drop
+        # Low speed (3km/h) means high duration -> high HVAC consumption
+        e = payload.edges.add(); e.u, e.v, e.weight_m, e.speed_kmh = 0, 1, 10, 3 
+        
+        request = route_engine_pb2.RouteRequest()
+        request.start.lat, request.start.lng = 45.0, 9.0
+        request.end.lat, request.end.lng = 45.0001, 9.0
+        request.map_data_pb = payload.SerializeToString()
+        request.ev_params.enabled = True
+        request.ev_params.aux_power_kw = 5.0 # Massive HVAC load
+        
+        response = self.stub.CalculateRoute(request)
+        for res in response.results:
+            if res.algorithm == "Dijkstra" and len(res.polyline) >= 2:
+                # Even if segment_consumed_kwh is positive due to HVAC
+                # is_regen should identify that traction work was negative
+                self.assertTrue(res.polyline[1].is_regen, f"Regen flag missed for {res.algorithm}")
+        print("[REGEN] HVAC Offset Logic: Success")
+
+    def test_charging_energy_accounting(self):
+        """Bug C: Verify arrival_soc_kwh = start - consumed (where consumed includes negative gains) (v2.5.1)."""
+        payload = route_engine_pb2.MapPayload()
+        # Node 0 (Start) -> Node 1 (Charger) -> Node 2 (Goal)
+        n0 = payload.nodes.add(); n0.id, n0.lat, n0.lng, n0.elevation = 0, 45.0, 9.0, 0.0
+        n1 = payload.nodes.add(); n1.id, n1.lat, n1.lng, n1.elevation = 1, 45.1, 9.0, 0.0
+        n2 = payload.nodes.add(); n2.id, n2.lat, n2.lng, n2.elevation = 2, 45.2, 9.0, 0.0
+        
+        n1.is_charger, n1.charger_type, n1.kw_output, n1.is_operational = True, "DC_FAST", 150.0, True
+        
+        # Edge 0->1 (10km), Edge 1->2 (10km)
+        e1 = payload.edges.add(); e1.u, e1.v, e1.weight_m, e1.speed_kmh = 0, 1, 10000, 100
+        e2 = payload.edges.add(); e2.u, e2.v, e2.weight_m, e2.speed_kmh = 1, 2, 10000, 100
+        
+        request = route_engine_pb2.RouteRequest()
+        request.start.lat, request.start.lng = 45.0, 9.0
+        request.end.lat, request.end.lng = 45.2, 9.0
+        request.map_data_pb = payload.SerializeToString()
+        request.ev_params.enabled = True
+        request.ev_params.start_soc_kwh = 10.0 # Low start SoC
+        request.ev_params.min_arrival_soc_kwh = 15.0 # Goal requires more than we start with
+        request.ev_params.target_charge_bound_kwh = 50.0 # Charge to 50kWh
+        
+        response = self.stub.CalculateRoute(request)
+        for res in response.results:
+            if res.algorithm == "Dijkstra" and len(res.polyline) > 0:
+                # 1. Verify arrival SoC
+                # It should be 50kWh (charge target) minus energy from Node 1 to Node 2
+                self.assertGreater(res.arrival_soc_kwh, 45.0)
+                self.assertLess(res.arrival_soc_kwh, 50.0)
+                
+                # 2. Verify consumed_kwh math: arrival = start - consumed
+                # Consumed should be negative because charging gain (40kWh) > drive loss (approx 5kWh)
+                expected_consumed = request.ev_params.start_soc_kwh - res.arrival_soc_kwh
+                self.assertAlmostEqual(res.consumed_kwh, expected_consumed, delta=0.1)
+                self.assertLess(res.consumed_kwh, 0)
+        print("[CHARGING] Energy Accounting: Success")
+
 if __name__ == '__main__':
     unittest.main()

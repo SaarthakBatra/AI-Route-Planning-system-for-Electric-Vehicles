@@ -11,6 +11,12 @@ message Coordinate {
     double lat = 1;
     double lng = 2;
     double segment_consumed_kwh = 3;
+    bool is_charging_stop = 4;
+    string charger_type = 5;
+    double kw_output = 6;
+    bool is_operational = 7;
+    double planned_soc_kwh = 8;
+    bool is_regen = 9;
 }
 
 enum PortType {
