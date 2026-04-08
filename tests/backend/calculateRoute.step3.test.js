@@ -2,9 +2,19 @@ const request = require('supertest');
 const app = require('../../modules/backend/index');
 const { calculateRouteGrpc } = require('../../modules/backend/services/grpcClient');
 
-// Mock the gRPC client
+const expectedMaxNodes = parseInt(process.env.ALGO_MAX_NODES) || 1000000;
+
+
+// Mock dependencies to prevent async leaks
 jest.mock('../../modules/backend/services/grpcClient', () => ({
     calculateRouteGrpc: jest.fn()
+}));
+jest.mock('../../modules/cache/services/osmWorker', () => ({
+    getMapPayload: jest.fn().mockResolvedValue({ binary: null, region_id: '' })
+}));
+jest.mock('../../modules/database', () => ({
+    connectMongo: jest.fn().mockResolvedValue(),
+    disconnectMongo: jest.fn().mockResolvedValue()
 }));
 
 describe('POST /api/routes/calculate (Step 3: Suite Results)', () => {
@@ -44,12 +54,14 @@ describe('POST /api/routes/calculate (Step 3: Suite Results)', () => {
         expect(firstResult).toHaveProperty('exec_time_ms');
         expect(firstResult).toHaveProperty('path_cost');
 
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            { lat: 40.7128, lng: -74.0060 },
-            { lat: 40.7306, lng: -73.9866 },
-            14,
-            'FASTEST'
-        );
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            start: { lat: 40.7128, lng: -74.0060 },
+            end: { lat: 40.7306, lng: -73.9866 },
+            mockHour: 14,
+            objective: 'FASTEST',
+            mapDataPb: null,
+            regionId: ''
+        }));
     });
 
     it('should use default mock_hour (12) and objective (FASTEST) if not provided', async () => {
@@ -62,12 +74,14 @@ describe('POST /api/routes/calculate (Step 3: Suite Results)', () => {
                 end: { lat: 40.7306, lng: -73.9866 }
             });
 
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.anything(),
-            12,
-            'FASTEST'
-        );
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            start: expect.anything(),
+            end: expect.anything(),
+            mockHour: 12,
+            objective: 'FASTEST',
+            mapDataPb: null,
+            regionId: ''
+        }));
     });
 
     it('should handle empty results gracefully', async () => {
@@ -96,11 +110,13 @@ describe('POST /api/routes/calculate (Step 3: Suite Results)', () => {
                 mock_hour: 25
             });
 
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.anything(),
-            12,
-            expect.anything()
-        );
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            start: expect.anything(),
+            end: expect.anything(),
+            mockHour: 12,
+            objective: expect.anything(),
+            mapDataPb: null,
+            regionId: ''
+        }));
     });
 });

@@ -1,0 +1,200 @@
+  - Added neighbor: 229770 (Unnamed Node)
+| 985812 | 411273 | 42765.6 | 40.1759 |
+  - Added neighbor: 411219 (Unnamed Node)
+| 985813 | 399344 | 42765.9 | 40.7854 |
+  - Added neighbor: 399221 (Unnamed Node)
+| 985814 | 201194 | 42767.4 | 41.1163 |
+  - Added neighbor: 201196 (Unnamed Node)
+| 985815 | 429941 | 42766.2 | 41.0038 |
+  - Added neighbor: 429942 (Unnamed Node)
+| 985816 | 428866 | 42766.2 | 40.919 |
+| 985817 | 414238 | 42765.6 | 40.1768 |
+  - Added neighbor: 414225 (Unnamed Node)
+| 985818 | 520076 | 42765.3 | 40.279 |
+  - Added neighbor: 520077 (Unnamed Node)
+| 985819 | 373974 | 42765.9 | 39.5223 |
+  - Added neighbor: 373903 (Unnamed Node)
+| 985820 | 360799 | 42766 | 40.1954 |
+| 985821 | 193488 | 42767.3 | 40.1005 |
+| 985822 | 193634 | 42767.3 | 40.1005 |
+  - Added neighbor: 193635 (Unnamed Node)
+| 985823 | 132102 | 42767 | 41.4548 |
+  - Added neighbor: 131970 (Unnamed Node)
+  - Added neighbor: 132183 (Unnamed Node)
+| 985824 | 133309 | 42766.9 | 41.3518 |
+  - Added neighbor: 133383 (Unnamed Node)
+| 985825 | 189132 | 42767.5 | 40.6738 |
+  - Added neighbor: 188886 (Unnamed Node)
+  - Added neighbor: 189139 (Unnamed Node)
+| 985826 | 376249 | 42765.7 | 39.5011 |
+  - Added neighbor: 376248 (Unnamed Node)
+| 985827 | 390914 | 42765.9 | 39.8186 |
+| 985828 | 167725 | 42767.7 | 41.15 |
+  - Added neighbor: 167672 (Unnamed Node)
+| 985829 | 405225 | 42765.6 | 39.5341 |
+  - Added neighbor: 405231 (Unnamed Node)
+  - Added neighbor: 405227 (Unnamed Node)
+  - Added neighbor: 405195 (Unnamed Node)
+| 985830 | 207493 | 42767.3 | 41.279 |
+| 985831 | 406719 | 42765.6 | 39.2389 |
+  - Added neighbor: 406843 (Unnamed Node)
+  - Added neighbor: 406912 (Unnamed Node)
+| 985832 | 187201 | 42767.6 | 40.6473 |
+  - Added neighbor: 187198 (Unnamed Node)
+| 985833 | 405207 | 42765.6 | 39.5328 |
+  - Added neighbor: 405137 (Unnamed Node)
+  - Added neighbor: 405228 (Unnamed Node)
+| 985834 | 201009 | 42767.5 | 41.1068 |
+  - Added neighbor: 201028 (August Kranti Marg)
+| 985835 | 237390 | 42767.3 | 41.6303 |
+  - Added neighbor: 237462 (Golf Drive)
+| 985836 | 167438 | 42767.8 | 41.0412 |
+  - Added neighbor: 167133 (Unnamed Node)
+| 985837 | 132465 | 42767 | 41.3975 |
+| 985838 | 133582 | 42766.9 | 41.2998 |
+  - Added neighbor: 133583 (Faridabad-Gurgaon Road)
+  - Added neighbor: 133691 (Unnamed Node)
+| 985839 | 374026 | 42765.9 | 39.5373 |
+  - Added neighbor: 373824 (Unnamed Node)
+| 985840 | 206601 | 42767.3 | 41.3083 |
+  - Added neighbor: 206554 (Park Drive)
+| 985841 | 430941 | 42766.2 | 41.5824 |
+  - Added neighbor: 430942 (Unnamed Node)
+| 985842 | 359756 | 42766.4 | 40.9214 |
+| 985843 | 134242 | 42767 | 41.4895 |
+  - Added neighbor: 134234 (Unnamed Node)
+| 985844 | 192779 | 42767.4 | 40.56 |
+| 985845 | 375011 | 42765.7 | 39.5137 |
+  - Added neighbor: 375192 (Unnamed Node)
+  - Added neighbor: 375010 (Unnamed Node)
+| 985846 | 585288 | 42765.5 | 40.9791 |
+  - Added neighbor: 585289 (Unnamed Node)
+| 985847 | 275502 | 42766.9 | 40.1997 |
+  - Added neighbor: 275503 (Sector 18)
+| 985848 | 190884 | 42767.5 | 40.0193 |
+  - Added neighbor: 191304 (Bajghera Road)
+  - Added neighbor: 190969 (Bajghera Road)
+  - Added neighbor: 190970 (Bajghera Road Underpass)
+| 985849 | 191861 | 42767.5 | 40.0336 |
+  - Added neighbor: 191862 (Unnamed Node)
+| 985850 | 232772 | 42767.5 | 40.6837 |
+  - Added neighbor: 232798 (Unnamed Node)
+  - Added neighbor: 232771 (Unnamed Node)
+| 985851 | 192794 | 42767.4 | 40.597 |
+| 985852 | 360592 | 42766.1 | 40.1953 |
+  - Added neighbor: 360593 (Unnamed Node)
+| 985853 | 133481 | 42766.9 | 41.3013 |
+  - Added neighbor: 133584 (Faridabad-Gurgaon Road)
+| 985854 | 591484 | 42765.4 | 40.9373 |
+| 985855 | 519263 | 42765.5 | 40.6006 |
+  - Added neighbor: 518848 (Jaypee Greens Internal Road)
+| 985856 | 132475 | 42767 | 41.3811 |
+  - Added neighbor: 132471 (Unnamed Node)
+| 985857 | 390745 | 42765.9 | 39.8453 |
+  - Added neighbor: 390744 (Unnamed Node)
+  - Added neighbor: 390731 (Unnamed Node)
+| 985858 | 369691 | 42765.7 | 39.3637 |
+  - Added neighbor: 369698 (Unnamed Node)
+| 985859 | 399266 | 42765.9 | 40.7854 |
+| 985860 | 587876 | 42765.5 | 40.9794 |
+| 985861 | 162473 | 42767.9 | 40.9153 |
+# A* Debug Log (EV: ON)
+- Start: 375601 (Unnamed Node)
+- Target: 162473 (Unnamed Node)
+| Step | Node ID | Cost | SoC |
+|---|---|---|---|
+| 1 | 375601 | 0 | 13.5 |
+  - Added neighbor: 375548 (Unnamed Node)
+  - Added neighbor: 375663 (Unnamed Node)
+  - Added neighbor: 375542 (Unnamed Node)
+| 2 | 375663 | 6.1296 | 13.495 |
+  - Added neighbor: 375551 (Unnamed Node)
+| 3 | 375542 | 6.7728 | 13.4944 |
+  - Added neighbor: 375533 (Unnamed Node)
+  - Added neighbor: 375541 (Unnamed Node)
+  - Added neighbor: 375543 (Unnamed Node)
+| 4 | 375551 | 6.9888 | 13.4943 |
+  - Added neighbor: 375544 (Unnamed Node)
+  - Added neighbor: 375552 (Unnamed Node)
+| 5 | 375552 | 9.4068 | 13.4923 |
+  - Added neighbor: 375554 (Unnamed Node)
+  - Added neighbor: 375559 (Unnamed Node)
+| 6 | 375543 | 11.9148 | 13.4902 |
+  - Added neighbor: 375534 (Unnamed Node)
+  - Added neighbor: 375544 (Unnamed Node)
+| 7 | 375533 | 12.9708 | 13.4893 |
+  - Added neighbor: 375532 (Unnamed Node)
+  - Added neighbor: 375659 (Unnamed Node)
+| 8 | 375544 | 13.668 | 13.4888 |
+  - Added neighbor: 375546 (Unnamed Node)
+| 9 | 375559 | 14.748 | 13.4879 |
+  - Added neighbor: 375664 (Unnamed Node)
+  - Added neighbor: 375646 (Unnamed Node)
+  - Added neighbor: 375662 (Unnamed Node)
+| 10 | 375548 | 14.802 | 13.4878 |
+  - Added neighbor: 375540 (Unnamed Node)
+  - Added neighbor: 375454 (Unnamed Node)
+| 11 | 375664 | 15.2988 | 13.4874 |
+  - Added neighbor: 375571 (Unnamed Node)
+| 12 | 375541 | 15.768 | 13.487 |
+  - Added neighbor: 375532 (Unnamed Node)
+| 13 | 375662 | 15.954 | 13.4869 |
+  - Added neighbor: 375665 (Unnamed Node)
+| 14 | 375665 | 16.4088 | 13.4865 |
+  - Added neighbor: 375558 (Unnamed Node)
+| 15 | 375534 | 17.6796 | 13.4855 |
+  - Added neighbor: 375535 (Unnamed Node)
+  - Added neighbor: 375660 (Unnamed Node)
+| 16 | 375659 | 18.8472 | 13.4845 |
+  - Added neighbor: 375526 (Unnamed Node)
+| 17 | 375526 | 19.5492 | 13.4839 |
+  - Added neighbor: 375525 (Unnamed Node)
+  - Added neighbor: 375527 (Unnamed Node)
+| 18 | 375571 | 20.0616 | 13.4835 |
+  - Added neighbor: 375583 (Unnamed Node)
+  - Added neighbor: 375573 (Unnamed Node)
+| 19 | 375454 | 20.5536 | 13.4831 |
+  - Added neighbor: 375398 (Unnamed Node)
+| 20 | 375398 | 21.4056 | 13.4824 |
+  - Added neighbor: 375403 (Unnamed Node)
+  - Added neighbor: 375390 (Unnamed Node)
+| 21 | 375540 | 21.522 | 13.4823 |
+  - Added neighbor: 375657 (Unnamed Node)
+| 22 | 375532 | 21.954 | 13.482 |
+  - Added neighbor: 375658 (Unnamed Node)
+| 23 | 375558 | 22.9704 | 13.4811 |
+  - Added neighbor: 375569 (Unnamed Node)
+  - Added neighbor: 375557 (Unnamed Node)
+| 24 | 375554 | 23.0064 | 13.4811 |
+  - Added neighbor: 375647 (Unnamed Node)
+| 25 | 375660 | 24.138 | 13.4802 |
+| 26 | 375527 | 24.5628 | 13.4798 |
+  - Added neighbor: 375528 (Unnamed Node)
+| 27 | 375528 | 26.208 | 13.4785 |
+  - Added neighbor: 375529 (Unnamed Node)
+  - Added neighbor: 375677 (Unnamed Node)
+| 28 | 375583 | 26.3016 | 13.4784 |
+  - Added neighbor: 375590 (Unnamed Node)
+  - Added neighbor: 375584 (Unnamed Node)
+| 29 | 375569 | 26.9088 | 13.4779 |
+  - Added neighbor: 375587 (Unnamed Node)
+  - Added neighbor: 375604 (Unnamed Node)
+| 30 | 375677 | 27.1464 | 13.4777 |
+  - Added neighbor: 375519 (Unnamed Node)
+| 31 | 375546 | 27.21 | 13.4776 |
+  - Added neighbor: 375535 (Unnamed Node)
+| 32 | 375647 | 27.6252 | 13.4773 |
+  - Added neighbor: 375648 (Unnamed Node)
+| 33 | 375646 | 27.6492 | 13.4773 |
+  - Added neighbor: 375564 (Unnamed Node)
+| 34 | 375658 | 27.7584 | 13.4772 |
+  - Added neighbor: 375525 (Unnamed Node)
+| 35 | 375604 | 28.008 | 13.477 |
+  - Added neighbor: 375563 (Unnamed Node)
+| 36 | 375564 | 28.0008 | 13.477 |
+| 37 | 375648 | 28.0272 | 13.477 |
+| 38 | 375390 | 28.224 | 13.4768 |
+  - Added neighbor: 375459 (Unnamed Node)
+  - Added neighbor: 375386 (Unnamed Node)
+| 39 | 375557 | 28.248 | 13.4768 |
+| 40 | 375525 | 28.5048 | 13.4766 |

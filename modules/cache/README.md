@@ -42,6 +42,39 @@ sequenceDiagram
     C-->>B: Return { binary, region_id }
 ```
 
+### 1.3 Sequence: Tiled OCM Charging Ingestion
+```mermaid
+sequenceDiagram
+    participant O as osmWorker
+    participant W as ocmWorker
+    participant D as Database Service
+    participant API as OCM API
+
+    O->>W: getOCMChargers(bbox)
+    W->>W: Decompose BBox to Tiles
+    loop For Each Tile
+        W->>D: getTileMetadata(key)
+        alt Stale OR Missing
+            W->>D: acquireTileFetchLock(key)
+            alt Lock Acquired
+                W->>API: FETCH region data (verbose=true)
+                API-->>W: JSON POIs
+                W->>D: upsertTileChargers(key, data)
+            else Lock Denied AND Missing
+                loop Polling (Max 10s)
+                    W->>D: getTileMetadata(key)
+                    Note over W,D: Wait for status != 'fetching'
+                end
+            end
+        end
+        W->>D: getChargersByTile(key)
+        D-->>W: List[Charger]
+    end
+    W->>W: Merge & Trim to Exact Bbox
+    W-->>O: Return Filtered Chargers
+    Note right of W: Background status refreshes fired via setImmediate
+```
+
 ## 2. Real-World Scenarios
 
 ### Scenario A: High-Frequency Corridor Search
@@ -68,6 +101,13 @@ sequenceDiagram
 - **The Problem**: Large OSM datasets can exceed RAM.
 - **The Solution**: **Metadata-driven LRU**.
 - **Behavior**: Every access updates a Redis Sorted Set (`osm_metadata`) with a score = `Date.now()`. When `MAX_CACHE_ENTRIES` (1000) is reached, the entry with the lowest score is deleted from both the data key and the metadata set.
+
+### Scenario D: The Cold Start Guarantee (Synchronous Ingestion)
+- **The Problem**: Concurrent users requesting a new area simultaneously resulted in the first user getting data while the second user received an empty "poisoned" map.
+- **The Solution**: **Wait-on-Missing Protocol**.
+- **Behavior**: 
+    - If a tile is being fetched for the first time, all concurrent requests **block and poll** (up to 10s) until the primary worker completes the ingestion.
+    - **Outcome**: 100% data fidelity for every user on the very first request.
 
 ## 3. The War Room: Bugs Faced & Solved
 
@@ -97,6 +137,19 @@ sequenceDiagram
 - **The Problem**: Retry logic in `osmWorker.js` caused unit tests to exceed the default 5s Jest timeout.
 - **The Solution**: Switched to `jest.useFakeTimers()` in the test suite to instantly fast-forward through backoff delays, ensuring 100% test coverage for error paths without real-world latency.
 
+### 3.6 The Architecture Leakage Crisis
+- **The Problem**: `ocmWorker.js` was performing direct Mongoose operations, bypassing the centralized `database` module and causing connection conflicts in production environments.
+- **The Solution**: **Tiled Ingestion Refactor**.
+    - **Total Delegation**: Removed all models from `cache`. Delegated persistence to `database.chargerService`.
+    - **Spatial Grid**: Implemented 0.5° tiling to reduce OCM API load and ensure atomic fetch locking.
+    - **Status Observer**: Implemented background refreshes using `setImmediate` to maintain status-fidelity (24h) without blocking gRPC performance.
+
+### 3.7 The Environmental Variable Poisoning
+- **The Problem**: A legacy `MONGO_URI` in `modules/cache/.env` was overriding the global Atlas connection string during orchestration, causing `ECONNREFUSED` errors in the cloud.
+- **The Solution**: **Strict Environment Separation**.
+    - **Purged Cache Config**: Removed all persistence variables from the cache module.
+    - **Enforced Inheritance**: The module now relies on environment variables passed from the root or the `database` module to ensure a single source of truth for database connectivity.
+
 ## 4. Configuration (Environment Variables)
 
 | Variable | Default | Description |
@@ -106,6 +159,9 @@ sequenceDiagram
 | `MAX_CACHE_ENTRIES` | `1000` | LRU capacity limit. |
 | `OSM_TIMEOUT_MS` | `30000` | Client-side fetch timeout (ms). |
 | `OSM_REQ_RETRY_COUNT` | `3` | Number of retries for 503/504 errors. |
+
+> [!NOTE]
+> This module inherits its persistent storage configuration (`MONGO_URI`) from the orchestration layer or `modules/database` to ensure consistency and prevent connection conflicts with local dev environments.
 
 ## 5. Build and Lifecycle
 

@@ -45,6 +45,31 @@ main {
     padding: 24px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     transition: all 0.3s ease;
+    
+    /* Stage 5: Prevent Overflow */
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(76, 175, 80, 0.5) transparent;
+}
+
+/* Custom Scrollbar for Premium Feel */
+.glass-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+.glass-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.glass-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    transition: background 0.3s;
+}
+
+.glass-panel::-webkit-scrollbar-thumb:hover {
+    background: rgba(76, 175, 80, 0.5);
 }
 
 .glass-panel h1 {
@@ -534,4 +559,194 @@ button:disabled {
     font-weight: 800;
     margin-left: 8px;
     vertical-align: middle;
+}
+
+/* --- Stage 5 EV Mission Control Styles --- */
+
+/* Toggle Switch */
+.toggle-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 20px 0;
+    padding: 12px;
+    background: rgba(76, 175, 80, 0.1);
+    border-radius: 8px;
+    border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.toggle-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #4CAF50;
+}
+
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider.round {
+    position: absolute;
+    cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: rgba(255, 255, 255, 0.2);
+    transition: .4s;
+    border-radius: 24px;
+}
+
+.slider.round:before {
+    position: absolute;
+    content: "";
+    height: 18px; width: 18px;
+    left: 3px; bottom: 3px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked + .slider {
+    background-color: #4CAF50;
+}
+
+input:checked + .slider:before {
+    transform: translateX(20px);
+}
+
+/* EV Params Panel */
+.ev-params-panel {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    animation: slideDown 0.3s ease-out;
+}
+
+.panel-section h3 {
+    font-size: 0.9rem;
+    color: #4CAF50;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Collapsible Advanced Section */
+.advanced-collapsible {
+    margin-top: 15px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding-top: 10px;
+}
+
+.advanced-collapsible summary {
+    font-size: 0.8rem;
+    color: #a0a0a0;
+    cursor: pointer;
+    outline: none;
+    padding: 5px 0;
+    transition: color 0.2s;
+}
+
+.advanced-collapsible summary:hover {
+    color: #ffffff;
+}
+
+.collapsible-content {
+    padding-top: 10px;
+}
+
+.collapsible-content .input-group input {
+    padding: 6px 8px;
+    font-size: 0.8rem;
+}
+
+/* Trip Execution Panel */
+.trip-execution-panel {
+    position: absolute;
+    bottom: 30px;
+    right: 20px;
+    width: 320px;
+    padding: 20px;
+    background: rgba(30, 30, 40, 0.85) !important;
+}
+
+.trip-execution-panel h3 {
+    font-size: 1rem;
+    color: #FBBF24;
+    margin-bottom: 12px;
+}
+
+.logger-instruction {
+    font-size: 0.8rem;
+    color: #ccc;
+    margin-bottom: 10px;
+}
+
+.input-with-action {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.mini-btn {
+    width: auto;
+    padding: 6px 12px;
+    margin: 0;
+    background: #FBBF24;
+    color: #000;
+}
+
+.deviation-readout {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.recompute-btn {
+    background: #ef4444;
+    color: white;
+    font-size: 0.85rem;
+    margin-top: 10px;
+}
+
+/* Charger Marker Ontology */
+.charger-icon {
+    border-radius: 50%;
+    border: 2px solid white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+.charger-icon.fast { background-color: #FBBF24; } /* Yellow */
+.charger-icon.unknown { background-color: #3B82F6; } /* Blue */
+.charger-icon.emergency { 
+    background-color: #FBBF24; 
+    clip-path: polygon(50% 0%, 0% 100%, 100% 100%); 
+    border-radius: 0;
+} /* Yellow Triangle */
+.charger-icon.offline { background-color: #9CA3AF; } /* Grey */
+.charger-icon.incompatible { background-color: #EF4444; } /* Red */
+
+/* Animations */
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Utility */
+.hidden {
+    display: none !important;
 }

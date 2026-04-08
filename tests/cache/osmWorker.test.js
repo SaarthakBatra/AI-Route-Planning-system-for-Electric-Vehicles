@@ -19,6 +19,7 @@
 
 const mockRedisClient = {
     get: jest.fn(),
+    getBuffer: jest.fn(),
     set: jest.fn(),
     zadd: jest.fn(),
     zcard: jest.fn(),
@@ -40,10 +41,30 @@ jest.mock('../../modules/cache/utils/logger', () => ({
     done: jest.fn(),
 }));
 
+jest.mock('../../modules/cache/services/elevationService', () => ({
+    getElevation: jest.fn().mockResolvedValue({ elevation: 123.45, confidence: 1.0 })
+}));
+
+jest.mock('../../modules/cache/services/ocmWorker', () => ({
+    getOCMChargers: jest.fn().mockResolvedValue([
+        { 
+            ocm_id: 101, 
+            lat: 51.05, 
+            lng: 0.05, 
+            location: { coordinates: [0.05, 51.05] }, // GeoJSON requirement
+            name: 'Mock Charger', 
+            available_ports: ['CCS2'], 
+            kw_output: 50,
+            is_operational: true,
+            status_refreshed_at: new Date()
+        }
+    ])
+}));
+
 // Mock native fetch
 global.fetch = jest.fn();
 
-const { getMapData, getBBoxKey, quantize } = require('../../modules/cache/services/osmWorker');
+const { getMapData, getMapPayload, getBBoxKey, quantize } = require('../../modules/cache/services/osmWorker');
 const logger = require('../../modules/cache/utils/logger');
 
 // ─── Test Suite ──────────────────────────────────────────────────────────────
@@ -181,5 +202,30 @@ describe('Cache: osmWorker.js', () => {
             await expect(promise).rejects.toThrow('OSM API error');
             expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('getMapData failed'));
         }, 30000);
+    });
+
+    // ── 7. Stage 5 Integration Verification ──────────────────────────────────
+    describe('Stage 5: binary MapPayload', () => {
+        it('successfully produces a binary payload with Stage 5 fields', async () => {
+            const bbox = { minLat: 51, minLon: 0, maxLat: 51.1, maxLon: 0.1 };
+            const mockOsmData = { 
+                elements: [
+                    { type: 'node', id: 1, lat: 51.05, lon: 0.05, tags: { name: 'Test' } },
+                    { type: 'way', id: 10, nodes: [1], tags: { highway: 'primary' } }
+                ] 
+            };
+
+            mockRedisClient.get.mockResolvedValue(null);
+            fetch.mockResolvedValue({
+                ok: true,
+                json: async () => mockOsmData,
+            });
+
+            const result = await getMapPayload(bbox);
+
+            expect(result.binary).toBeInstanceOf(Buffer);
+            expect(result.region_id).toContain('bbox:51_0_51.1_0.1');
+            expect(logger.done).toHaveBeenCalledWith('getMapPayload', expect.stringContaining('SUCCESS'));
+        });
     });
 });

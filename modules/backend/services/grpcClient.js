@@ -45,31 +45,62 @@ const clientOptions = {
 const client = new route_engine.RouteService(target, grpc.credentials.createInsecure(), clientOptions);
 
 /**
- * Calls the CalculateRoute gRPC method.
- * @param {Object} start - { lat, lng }
- * @param {Object} end - { lat, lng }
- * @param {number} mock_hour - 0-23
- * @param {string} objective - 'FASTEST' | 'SHORTEST'
- * @param {Buffer|null} map_data_pb - Binary-serialized MapPayload (v2)
- * @param {string} region_id - Geographic region identifier for C++ Graph Cache (v2)
- * @param {string} map_data - Stringified OSM JSON from cache (v1 - Backwards Compatible)
- * @returns {Promise<Object>} The RouteResponse object containing a results array
+ * Calls the CalculateRoute gRPC method using an options-object pattern.
+ * @param {Object} params - Unified request and tuning parameters.
+ * @param {Object} params.start - { lat, lng }
+ * @param {Object} params.end - { lat, lng }
+ * @param {number} [params.mockHour=12] - 0-23
+ * @param {string} [params.objective='FASTEST'] - 'FASTEST' | 'SHORTEST'
+ * @param {Buffer|null} [params.mapDataPb=null] - Binary-serialized MapPayload (v2)
+ * @param {string} [params.regionId=''] - Geographic region identifier for C++ Graph Cache (v2)
+ * @param {string} [params.mapData=''] - Stringified OSM JSON from cache (v1 - Backwards Compatible)
+ * @param {Object|null} [params.evParams=null] - Physics and constraint parameters (Stage 5)
+ * @param {number} [params.maxNodes=1000000] - Maximum expansion limit
+ * @param {number} [params.socStep=0.1] - Energy discretization bin size
+ * @param {number} [params.debugLogCap=1000000] - Granular trace limit
+ * @param {number} [params.logFlushNodes=5000] - Heartbeat flush frequency (Nodes)
+ * @param {number} [params.logFlushInterval=5] - Heartbeat flush frequency (Seconds)
+ * @param {number} [params.epsilonMin=10.0] - Search relaxation threshold
+ * @param {number} [params.bandingShortest=10.0] - Shortest-path banding factor
+ * @param {number} [params.bandingFastest=1.0] - Fastest-path banding factor
+ * @param {number} [params.logInterval=250000] - Node expansion frequency for heartbeat logging
+ * @param {boolean} [params.algoDebug=false] - (v2.2.0) Flag to enable engine-side optimized tracing
+ * @param {boolean} [params.debugMode=false] - (v2.2.0) General debug flag for verbose logging
+ * @returns {Promise<Object>} The RouteResponse object
  */
-const calculateRouteGrpc = (start, end, mock_hour = 12, objective = 'FASTEST', map_data_pb = null, region_id = '', map_data = '') => {
+const calculateRouteGrpc = (params = {}) => {
+    const {
+        start, end, mockHour = 12, objective = 'FASTEST',
+        mapDataPb = null, regionId = '', mapData = '', evParams = null,
+        maxNodes = 10000000, socStep = 0.1, killTimeMs = 60000,
+        debugNodeInterval = 5000,
+        epsilonMin = 10.0, bandingShortest = 10.0, bandingFastest = 1.0,
+        algoDebug = false, debugMode = false
+    } = params;
+
     return new Promise((resolve, reject) => {
         const routeRequest = { 
             start, 
             end, 
-            mock_hour, 
+            mock_hour: mockHour, 
             objective,
-            map_data,
-            region_id,
-            map_data_pb
+            map_data: mapData,
+            region_id: regionId,
+            map_data_pb: mapDataPb,
+            ev_params: evParams
         };
         
-        // Step 4: Trigger the full search suite with metadata
         const metadata = new grpc.Metadata();
         metadata.add('use-suite', 'true');
+        metadata.add('max-nodes', maxNodes.toString());
+        metadata.add('soc-discretization-step', socStep.toString());
+        metadata.add('kill-time-ms', killTimeMs.toString());
+        metadata.add('debug-node-interval', debugNodeInterval.toString());
+        metadata.add('epsilon-min', epsilonMin.toString());
+        metadata.add('banding-shortest', bandingShortest.toString());
+        metadata.add('banding-fastest', bandingFastest.toString());
+        metadata.add('algo-debug', algoDebug.toString());
+        metadata.add('debug-mode', debugMode.toString());
         
         const store = storage.getStore();
         if (store && store.logDir) {
@@ -81,8 +112,8 @@ const calculateRouteGrpc = (start, end, mock_hour = 12, objective = 'FASTEST', m
             target, 
             request: { 
                 ...routeRequest, 
-                map_data: map_data ? `${map_data.substring(0, 50)}...` : 'EMPTY',
-                map_data_pb: map_data_pb ? `BINARY(${map_data_pb.length} bytes)` : 'EMPTY'
+                map_data: mapData ? `${mapData.substring(0, 50)}...` : 'EMPTY',
+                map_data_pb: mapDataPb ? `BINARY(${mapDataPb.length} bytes)` : 'EMPTY'
             },
             metadata: metadata.getMap() 
         });

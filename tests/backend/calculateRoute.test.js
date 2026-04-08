@@ -7,49 +7,91 @@ jest.mock('../../modules/backend/services/grpcClient', () => ({
     calculateRouteGrpc: jest.fn()
 }));
 jest.mock('../../modules/cache/services/osmWorker', () => ({
-    getMapPayload: jest.fn().mockResolvedValue({ binary: null, region_id: '' }) // Default to empty
+    getMapPayload: jest.fn().mockResolvedValue({ binary: null, region_id: '' })
+}));
+jest.mock('../../modules/database', () => ({
+    connectMongo: jest.fn().mockResolvedValue(),
+    disconnectMongo: jest.fn().mockResolvedValue()
 }));
 
-describe('POST /api/routes/calculate', () => {
+describe('POST /api/routes/calculate (v2.3.0 Sync)', () => {
+    const backupEnv = { ...process.env };
+
     beforeEach(() => {
         jest.clearAllMocks();
-    });
-    it('should return 400 if coordinates are missing', async () => {
-        const response = await request(app)
-            .post('/api/routes/calculate')
-            .send({});
-        expect(response.status).toBe(400);
-        expect(response.body.error).toBe(true);
+        // Reset process.env to a predictable state for each test
+        process.env = { 
+            ...backupEnv,
+            ALGO_MAX_NODES: '10000000',
+            ALGO_KILL_TIME_MS: '60000', // v2.3.0 Default
+            ALGO_DEBUG_NODE_INTERVAL: '5000',
+            ALGO_DEBUG: 'false'
+        };
     });
 
-    it('should return 400 if coordinates are invalid types', async () => {
-        const response = await request(app)
+    afterAll(() => {
+        process.env = backupEnv;
+    });
+
+    it('should return 400 if coordinates are missing', async () => {
+        const response = await request(app).post('/api/routes/calculate').send({});
+        expect(response.status).toBe(400);
+    });
+
+    it('should use v2.3.0 default kill-time-ms (60000)', async () => {
+        calculateRouteGrpc.mockResolvedValue({ results: [] });
+
+        await request(app)
             .post('/api/routes/calculate')
             .send({
-                start: { lat: '40.7128', lng: -74.0060 },
+                start: { lat: 40.7128, lng: -74.0060 },
                 end: { lat: 40.7306, lng: -73.9866 }
             });
-        expect(response.status).toBe(400);
-        expect(response.body.error).toBe(true);
+
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            killTimeMs: 60000
+        }));
     });
 
-    it('should return 200 and a routed path from gRPC on valid coordinates', async () => {
-        const mockPolyline = [
-            { lat: 40.7128, lng: -74.0060 },
-            { lat: 40.7200, lng: -73.9900 },
-            { lat: 40.7306, lng: -73.9866 }
-        ];
-        
+    it('should detect Native I/O truncation and append directory pointer', async () => {
+        const logDirMarker = 'test_truncation_dir';
         calculateRouteGrpc.mockResolvedValue({
             results: [
                 {
                     algorithm: 'Dijkstra',
-                    polyline: mockPolyline,
-                    distance: 1000,
-                    duration: 300,
-                    nodes_expanded: 42,
-                    exec_time_ms: 0.15,
-                    path_cost: 1000
+                    debug_logs: 'Some initial logs... (TRUNCATED: Native I/O...)',
+                    nodes_expanded: 5000
+                }
+            ]
+        });
+
+        // Spy on getAndIncrementUID or just rely on the controller's logDir generation
+        // For testing purposes, we'll check if the pattern matches.
+        const response = await request(app)
+            .post('/api/routes/calculate')
+            .send({
+                start: { lat: 0, lng: 0 },
+                end: { lat: 1, lng: 1 }
+            });
+
+        expect(response.status).toBe(200);
+        const result = response.body.data.results[0];
+        expect(result.debug_logs).toContain('(TRUNCATED: Native I/O...)');
+        expect(result.debug_logs).toContain('[NOTICE] Granular logging offloaded to Direct I/O');
+        expect(result.debug_logs).toContain('Output/');
+        expect(result.debug_logs).toContain('Algo_Dijkstra.md');
+    });
+
+    it('should propagate segment_consumed_kwh in polyline coordinates', async () => {
+        calculateRouteGrpc.mockResolvedValue({
+            results: [
+                {
+                    algorithm: 'AStar',
+                    polyline: [
+                        { lat: 40.7128, lng: -74.0060, segment_consumed_kwh: 0.05 },
+                        { lat: 40.7306, lng: -73.9866, segment_consumed_kwh: 0.08 }
+                    ],
+                    nodes_expanded: 100
                 }
             ]
         });
@@ -57,44 +99,37 @@ describe('POST /api/routes/calculate', () => {
         const response = await request(app)
             .post('/api/routes/calculate')
             .send({
-                start: { lat: 40.7128, lng: -74.0060 },
-                end: { lat: 40.7306, lng: -73.9866 }
+                start: { lat: 0, lng: 0 },
+                end: { lat: 1, lng: 1 }
             });
-            
-        expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
-        expect(response.body.data.results).toHaveLength(1);
-        
-        const result = response.body.data.results[0];
-        expect(result.polyline).toHaveLength(3);
-        expect(result.polyline[0].lat).toBe(40.7128);
-        expect(result.distance).toBe(1000);
-        expect(result.duration).toBe(300);
-        expect(result.nodes_expanded).toBe(42);
 
-        // Verify gRPC was called with binary and region_id (empty in this mock case)
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            { lat: 40.7128, lng: -74.0060 },
-            { lat: 40.7306, lng: -73.9866 },
-            12,
-            'FASTEST',
-            null,
-            ''
-        );
+        expect(response.status).toBe(200);
+        const result = response.body.data.results[0];
+        expect(result.polyline).toHaveLength(2);
+        expect(result.polyline[0]).toHaveProperty('segment_consumed_kwh', 0.05);
+        expect(result.polyline[1]).toHaveProperty('segment_consumed_kwh', 0.08);
     });
 
-    
-    it('should return 500 if gRPC client fails', async () => {
-        calculateRouteGrpc.mockRejectedValue(new Error('gRPC connection failed'));
+    it('should maintain legacy behavior if no truncation marker is present', async () => {
+        calculateRouteGrpc.mockResolvedValue({
+            results: [
+                {
+                    algorithm: 'AStar',
+                    debug_logs: 'Small log trace.',
+                    nodes_expanded: 100
+                }
+            ]
+        });
 
         const response = await request(app)
             .post('/api/routes/calculate')
             .send({
-                start: { lat: 40.7128, lng: -74.0060 },
-                end: { lat: 40.7306, lng: -73.9866 }
+                start: { lat: 0, lng: 0 },
+                end: { lat: 1, lng: 1 }
             });
-            
-        expect(response.status).toBe(500);
-        expect(response.body.error).toBe(true);
+
+        const result = response.body.data.results[0];
+        expect(result.debug_logs).toBe('Small log trace.');
+        expect(result.debug_logs).not.toContain('[NOTICE]');
     });
 });

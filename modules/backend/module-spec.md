@@ -27,13 +27,22 @@
 - **Framework**: Express.js (v5) on Node.js 18+.
 - **Communication**: gRPC / Protobuf (`@grpc/grpc-js`).
 - **Context Management**: uses `AsyncLocalStorage` to consolidate logs from distributed layers (Cache, Database) into a single write operation.
-- **Target Resolution**: Dynamically resolved via `ROUTING_ENGINE_URL` environment variable.
+### 2.2 Environmental Coordination
+To prevent configuration poisoning, the Backend module adheres to the following environment rules:
+- **MongoDB Atlas**: `MONGO_URI` is NEVER defined in `modules/backend/.env`. It is pulled from `modules/database/.env` or the root environment (Source of Truth).
+- **gRPC Resolution**: `ROUTING_ENGINE_URL` must be explicitly defined in each environment to handle cross-container networking.
+- **Search Optimization**: `SOC_DISCRETIZATION_STEP` (Default: 0.1) defines the kWh energy bin size for heuristic pruning. Lower values increase precision; higher values improve search speed.
+- **Diagnostic Control**: (v2.3.0) `ALGO_KILL_TIME_MS` (Default: 60,000) and `ALGO_DEBUG_NODE_INTERVAL` (Default: 5,000) control the C++ Native Engine's internal logging and watchdog. `ENGINE_SIMULATOR` (Default: false) remains used for mock testing.
+- **Search Hyperparameters**: (v2.3.0) `ALGO_MAX_NODES` (Default: 10,000,000), `ROUTING_EPSILON_MIN` (10.0), `ROUTING_IDA_BANDING_SHORTEST` (10.0), and `ROUTING_IDA_BANDING_FASTEST` (1.0).
+- **Fail-Safe**: The `startServer` sequence must strictly check and log the URI type (e.g. `mongodb+srv://`) before opening the HTTP port.
 
-### 2.2 Directory Structure
+### 2.3 Directory Structure
 - `index.js`: Main entry point and lifecycle manager.
 - `routes/routeApi.js`: Defines REST endpoints and controller registration.
 - `controllers/calculateRoute.js`: Central logic for request validation and orchestration.
 - `services/grpcClient.js`: gRPC connectivity and metadata injection.
+- `services/evProfiles.js`: (NEW) Registry of high-fidelity OEM vehicle coefficients.
+- `utils/validation.js`: (NEW) Joi-based schema validation for physical coefficients.
 - `utils/context.js`: Shared request-buffer management.
 - `utils/logger.js`: High-performance, disk-sync logging utility.
 - `utils/uid.js`: Atomic request ID generator.
@@ -43,22 +52,42 @@
 #### POST `/api/routes/calculate`
 - **Request Parameters**:
     - `start`, `end`: Geographic Lat/Lng objects.
-    - `mock_hour`: 0-23 (Integer).
-    - `objective`: "FASTEST" | "SHORTEST".
+    - `mock_hour`, `objective`: Traffic and weighting (Default 12, FASTEST).
+    - **EV Strategy**:
+        - `enabled`: Activates EV physics (Default false).
+        - `vehicle_id`, `payload_kg`: Profile-based mass derivation.
+        - `effective_mass_kg`, `start_soc_kwh`: Absolute mission overrides (Priority 1).
+        - `drag_coeff`, `frontal_area_m2`, etc: Granular coefficient overrides.
+        - `target_charge_bound_kwh`, `is_emergency_assumption`: Explicit synchronization overrides (v2.5.0).
+- **Physics Priority**: 
+    1. Absolute Mission Overrides (`effective_mass_kg`, `start_soc_kwh`).
+    2. Selected Profile Coefficients (`vehicle_id`).
+    3. System Defaults (`standard_ev`) for zero-configuration missions.
 - **Response Schema**:
-    - Returns a `success: true` envelope containing an array of 5 algorithm results with path polylines and cost metrics.
+    - Returns a `success: true` envelope containing an array of algorithm results.
+    - **EV Metrics**: Each result includes `arrival_soc_kwh`, `consumed_kwh`, and `is_charging_stop`.
+    - **High-Fidelity Polyline**: Each coordinate in the `polyline` array includes `segment_consumed_kwh` (kWh).
     - **Standardized Failure Signature**: If an algorithm hits a circuit breaker (via `circuit_breaker_triggered: true` or exceeding `ALGO_MAX_NODES`), it returns:
-        - `polyline: []` (Empty string or array depending on transport, backend enforces `[]`)
+        - `polyline: []`
         - `distance: 0`, `duration: 0`, `path_cost: 0`
-        - `nodes_expanded`: `1,000,001` (Always `ALGO_MAX_NODES + 1`)
+        - `nodes_expanded`: `1,000,001`
         - `circuit_breaker_triggered: true`
         - `debug_logs`: Contains failure context (e.g., "Max nodes reached")
 
-#### gRPC Orchestration Contract
+#### gRPC Orchestration Contract (v2.2.0)
 - **Service**: `RouteService.CalculateRoute`
-- **Metadata**: 
+- **Method Signature (Node.js)**: `calculateRouteGrpc({ start, end, ...options })`
+- **Metadata Injection**: 
     - `use-suite`: `true`
     - `log-dir`: Absolute path for Engine-side tracing.
+    - `kill-time-ms`: (v2.3.0) Hard time-limit for search algorithms (Default: 60,000ms).
+    - `debug-node-interval`: (v2.3.0) Interval for granular node tracing.
+    - `max-nodes`: Absolute circuit breaker limit.
+    - `algo-debug`: (v2.3.0) Replaces legacy tracing; strictly decoupled from application DEBUG.
+    - `debug-mode`: General diagnostic verbosity toggle (Driven by `ENGINE_SIMULATOR`).
+- **Response Transformation**:
+    - Detect `(TRUNCATED: Native I/O...)` in `debug_logs`.
+    - Mutate result to include: `\n\n Full trace available on-disk at: Output/<logDir>/Algo_<algorithm>.md`.
 - **Error Mapping Strategy**:
     | gRPC Status Code | HTTP Status Code | Client Message |
     | :--- | :--- | :--- |

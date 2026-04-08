@@ -6,6 +6,8 @@
 - **Interactive Planner**: As a user, I want a high-fidelity visual map interface to plan and view multi-algorithm EV routes in real-time.
 - **Dynamic Search**: As a user, I want to search for locations using text input with smart suggestions or by clicking directly on the map.
 - **Traceability**: As a developer, I want to see the performance metrics of multiple algorithms simultaneously to compare search efficiency.
+- **EV Mission Control (Stage 5)**: As an EV driver, I want to configure my vehicle's physical parameters (mass, drag, battery health) to receive Pareto-optimal routes that guarantee arrival SoC.
+- **Real-World Tracking**: As a user, I want to input my actual SoC during trip execution and receive proactive "Conservative Recompute" suggestions if I deviate from the plan.
 
 ### Design Principles
 - **Visual Excellence**: Use glassmorphism and smooth micro-animations to provide a premium, state-of-the-art user experience.
@@ -13,29 +15,26 @@
 - **Decoupled Logic**: Separate map visualization from API orchestration to allow for easy testing and maintenance.
 - **State Persistence**: Maintain coordinate selection state across various UI interactions (theme switching, suggestion selection).
 
-### Acceptance Criteria (v1.2.1 Compliance)
-- **Multi-Algorithm Visualization**: ✅ Standardized parsing of `data.data.results` (Array of 5 Algorithm Result Objects).
-- **Overlapping Path Logic**: ✅ Implements pixel-perfect stacking for identical route segments using dynamic offsets.
-- **Interactive Toasts**: ✅ Glassmorphic notification cards with manual minimize/close and auto-minimization timers.
-- **Hover Synergy**: ✅ Context-aware highlighting where hovering a toast card emphasizes the corresponding map polyline.
-- **Smart Geocoding**: ✅ Integrated Nominatim search with debounced input and autocomplete dropdowns.
-- **Enhanced Failure Mapping (v1.3.0)**: ✅ Detection of "Limit Exceeded" (`circuit_breaker_triggered`) and "No Path Found" (`distance: 0`, `cost: 0`) states.
-- **Config Portability**: ✅ Transitioned to relative API paths (`/api/routes/...`) for environment-agnostic deployment.
+### Acceptance Criteria (Stage 5 Compliance)
+- **Advanced EV Panel**: ✅ Interactive physics configuration with OEM presets (Tesla, Rivian, etc.).
+- **Multi-Objective Visualization**: ✅ Standardized parsing of `data.data.results` including `arrival_soc_kwh` and `consumed_kwh`.
+- **Charger Ontology**: ✅ Shape-distinct tri-color markers for fast, assumed, emergency, and offline chargers.
+- **Regen Visualization**: ✅ Dashed polyline rendering for regenerative braking segments ($E_{consumed} < 0$).
+- **Plan vs Reality**: ✅ Integrated "Trip Execution Panel" for SoC deviation tracking and automated margin inflation.
+- **Enhanced Failure Mapping**: ✅ Detection of "Limit Exceeded" and "No Path Found" states.
 
 ## 2. Design
 
 ### Architecture & Tech Stack
 - **Foundation**: Vanilla HTML5, CSS3 (Custom Variables), ES6+ JavaScript.
 - **Mapping**: Leaflet.js (CDN implementation) for geometry rendering.
-- **State Management**: Centralized `state` object in `app.js` with event delegation for interactions.
-- **Communication (v1.3.0)**: Relative RESTful JSON patterns for environment-agnostic calls to the backend via `/api/routes/calculate`.
+- **State Management**: Centralized `state` object in `app.js` containing `evParams` and `vehiclePresets`.
+- **Communication**: Relative RESTful JSON patterns via `/api/routes/calculate`.
 
 ### Directory Structure
-- `index.html`: Main viewport container with map div and notification overlays.
-- `style.css`: Design system, glassmorphic toast styles, and theme-aware CSS tokens.
-- `app.js`: Core orchestration logic, multi-layer visualization, and telemetry lifecycle.
-- `package.json`: Dependency metadata and standard Quality Guardian scripts.
-- `eslint.config.js`: Flat configuration for strict linting of browser-side JS.
+- `index.html`: Viewport with map, route form, EV panel, and Trip Execution panel.
+- `style.css`: Design system, glassmorphic toast styles, charger ontologies, and regen segment styles.
+- `app.js`: Core orchestration, physics-based UI state, and Plan vs Reality logic.
 
 ### Data Models & API Contracts
 
@@ -44,8 +43,24 @@
 | :--- | :--- | :--- |
 | `start` | `Coordinate` | `{ lat: number, lng: number }` |
 | `end` | `Coordinate` | `{ lat: number, lng: number }` |
-| `objective` | `string` | "Fastest" or "Shortest" optimization goal. |
-| `mock_hour` | `number` | Simulated traffic hour (0-23).|
+| `objective` | `string` | "Fastest" or "Shortest" |
+| `mock_hour` | `number` | Simulated traffic hour (0-23) |
+| `ev_params` | `Object` | Nested physics and battery parameters (Stage 5) |
+
+#### `ev_params` Schema
+```json
+{
+  "enabled": boolean,
+  "effective_mass_kg": number,
+  "drag_coeff": number,
+  "aux_power_kw": number,
+  "start_soc_kwh": number,
+  "battery_soh_pct": number,
+  "min_arrival_soc_kwh": number,
+  "energy_uncertainty_margin_pct": number,
+  ...
+}
+```
 
 #### Inbound Response (`RouteResponse`)
 ```json
@@ -57,46 +72,25 @@
 }
 ```
 
-#### Internal State (`ApplicationState`)
-```javascript
-const state = {
-    startCoords: { lat, lng },
-    endCoords: { lat, lng },
-    selectionMode: 'start' | 'end' | 'done',
-    routeLayers: Array<L.Polyline>,
-    originalStyles: Map<string, StyleMetadata>,
-    breakerTriggered: boolean // New field for global circuit breaker status
-};
-```
-
-#### UI States: Limit Exceeded
-| State | CSS Class | Visual Feedback |
+#### AlgorithmResult Extensions (Stage 5)
+| Property | Type | Description |
 | :--- | :--- | :--- |
-| **Circuit Breaker Hit** | `.breaker-hit` | Red border, dark background, placeholder metrics (`---`). |
-| **No Path Found** | `.no-path` | Orange border, dark background, placeholder metrics (`---`). |
-| **Status Badge (Breaker)** | `.breaker-badge` | Red badge "LIMIT EXCEEDED" next to algorithm name. |
-| **Status Badge (No Path)** | `.no-path-badge` | Orange badge "NO PATH FOUND" next to algorithm name. |
+| `arrival_soc_kwh` | `number` | Estimated SoC at destination. |
+| `consumed_kwh` | `number` | Total energy used. |
+| `polyline` | `Array` | Coordinate pairs, some flagged with `is_charging_stop`. |
 
 ## 3. Verification
 
 ### Automated Tests
-- `npm test`: Runs `tests/frontend.test.js` to validate coordinate formatting, distance/duration logic, and utility functions.
-- `npm run lint`: Enforces zero-violation linting against the project's design system using ESLint.
+- `npm test`: Validates coordinate formatting, SoC-to-kWh conversion, and payload construction.
+- `npm run lint`: Enforces zero-violation linting.
 
 ### Manual Verification
-1.  **Multi-Theme Testing**: Verify map tile transitions between Dark, Light, and Satellite modes.
-2.  **Overlap Stress Test**: Request multiple routes with identical segments and verify polyline bundle offset accuracy.
-3.  **Interaction Pulse**: Hover over toast cards and verify 100% synchronization with map polyline opacity.
+1. **Mission Execution**: Log 3% deviation at Waypoint 1; verify "Conservative Recompute" triggers.
+2. **Visual Audit**: Verify dashed lines appear on downhill segments (Regen).
+3. **Charger Ontology**: Click "Fast Charger" icon and verify tooltip shows `Yellow Circle`.
 
 ## 4. Maintenance (Quality Guardian)
-
-### Refactoring Policy
-- **Global `ui` Map**: All DOM interactions must be centralized via the `ui` object to prevent repeated node selection.
-- **Debounce Enforcement**: Address search must utilize `appConfig.debounceTimeMs` to prevent API rate-limiting.
-- **Polyline Bundle Logic**: Offsets for overlapping paths are calculated in pixel space at the `zoomend` event to maintain perfect stacking at all zoom levels.
-
-### Quality Standards
-- 100% adherence to JSDoc documentation for all complex functions.
-- Zero globally leaked variables; all state must reside in the `state` object.
-- Consistent single-quote usage and semicolon termination as per `eslint.config.js`.
+- **Physics Synchronization**: All values sent to `/api/calculateRoute` must match gRPC units (kg, m², kW, kWh).
+- **Graceful Fallbacks**: If `ev_params` is disabled, the engine must return standard Time/Distance metrics without energy overhead.
 

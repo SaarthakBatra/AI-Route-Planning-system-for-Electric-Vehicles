@@ -10,6 +10,18 @@ enum Objective {
 message Coordinate {
     double lat = 1;
     double lng = 2;
+    double segment_consumed_kwh = 3;
+}
+
+enum PortType {
+    UNKNOWN_PORT = 0;
+    IEC_62196_T2 = 1;
+    CHADEMO = 2;
+    CCS1 = 3;
+    CCS2 = 4;
+    TESLA_S = 5;
+    BHARAT_DC = 6;
+    WALL_PLUG = 7;
 }
 
 // NEW: Structured node for binary transport (replaces OSM JSON nodes)
@@ -18,6 +30,16 @@ message NodeProto {
     double lat   = 2;
     double lng   = 3;
     string name  = 4;
+ 
+    // NEW (v2.1.0): 3D Topography & EV Charging Data
+    double elevation = 5;
+    double elevation_confidence = 6;
+    bool is_charger = 7;
+    string charger_type = 8;
+    double kw_output = 9;
+    bool is_operational = 10;
+    repeated PortType available_ports = 11;
+    bool is_emergency_assumption = 12;
 }
 
 // NEW: Structured edge for binary transport (replaces OSM JSON ways)
@@ -34,6 +56,28 @@ message EdgeProto {
 message MapPayload {
     repeated NodeProto nodes = 1;
     repeated EdgeProto edges = 2;
+}
+
+message EVParams {
+    double effective_mass_kg = 1;
+    double Crr = 2;
+    double wheel_radius_m = 3;
+    double ac_kw_max = 4;
+    double dc_kw_max = 5;
+    double max_regen_power_kw = 6;
+    double energy_uncertainty_margin_pct = 7;
+    double battery_soh_pct = 8;
+    double start_soc_kwh = 9;
+    double min_waypoint_soc_kwh = 10;
+    double min_arrival_soc_kwh = 11;
+    double target_charge_bound_kwh = 12;
+    bool enabled = 13;
+    
+    // NEW (v2.1.0): Enhanced physical coefficients for high-fidelity modeling
+    double drag_coeff = 14;           // dimensionless (Cd)
+    double frontal_area_m2 = 15;      // meters squared (A)
+    double regen_efficiency = 16;     // 0.0 - 1.0 (eta_regen)
+    double aux_power_kw = 17;         // kilowatts (P_aux)
 }
 
 message RouteRequest {
@@ -59,6 +103,10 @@ message RouteRequest {
     // Consumed by: ParseFromString() in server.py (~µs cost).
     // Takes priority over string map_data when both are present.
     bytes map_data_pb = 7;
+ 
+    // NEW (v2.1.0): EV-specific physics and constraint parameters.
+    // If null/missing, engine falls back to legacy distance/time metrics.
+    EVParams ev_params = 8;
 }
 
 message AlgorithmResult {
@@ -72,6 +120,11 @@ message AlgorithmResult {
     // NEW: Diagnostic fields
     string debug_logs = 8;
     bool circuit_breaker_triggered = 9;
+ 
+    // NEW (v2.1.0): EV Execution Data
+    double arrival_soc_kwh = 10;
+    double consumed_kwh = 11;
+    bool is_charging_stop = 12;
 }
 
 message RouteResponse {

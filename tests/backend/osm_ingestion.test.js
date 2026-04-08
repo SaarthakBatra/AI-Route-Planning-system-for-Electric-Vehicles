@@ -7,9 +7,12 @@
 
 const calculateRouteController = require('../../modules/backend/controllers/calculateRoute');
 const { calculateBBox } = require('../../modules/backend/utils/bbox');
-const { getMapData } = require('../../modules/cache/services/osmWorker');
+const { getMapPayload } = require('../../modules/cache/services/osmWorker');
 const { calculateRouteGrpc } = require('../../modules/backend/services/grpcClient');
 const logger = require('../../modules/backend/utils/logger');
+
+const expectedMaxNodes = parseInt(process.env.ALGO_MAX_NODES) || 1000000;
+
 
 // Mocks
 jest.mock('../../modules/cache/services/redisClient', () => ({
@@ -64,73 +67,60 @@ describe('OSM Integration Suite', () => {
     });
 
     test('2. Successful OSM Ingestion & gRPC Dispatch', async () => {
-        const mockMapData = { elements: [{ type: 'node', id: 1 }] };
-        getMapData.mockResolvedValue(mockMapData);
+        const mockMapData = Buffer.from('mock pb data');
+        getMapPayload.mockResolvedValue({ binary: mockMapData, region_id: 'bbox:1' });
         calculateRouteGrpc.mockResolvedValue({ results: [] });
 
         await calculateRouteController(req, res);
 
-        // Verify OSM worker was called with correct bbox (quantized)
-        expect(getMapData).toHaveBeenCalledWith({
-            minLat: 28.35, // 28.36 - 0.01
-            minLon: 75.58, // 75.59 - 0.01
-            maxLat: 28.38, // 28.37 + 0.01
-            maxLon: 75.61  // 75.60 + 0.01
+        // Verify OSM worker was called with correct bbox (quantized with 0.1 buffer)
+        expect(getMapPayload).toHaveBeenCalledWith({
+            minLat: 28.26, 
+            minLon: 75.49, 
+            maxLat: 28.47, 
+            maxLon: 75.70  
         });
 
-        // Verify gRPC client received stringified map data
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            req.body.start,
-            req.body.end,
-            10,
-            'FASTEST',
-            JSON.stringify(mockMapData)
-        );
+        // Verify gRPC client received binary map data
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            start: req.body.start,
+            end: req.body.end,
+            mockHour: 10,
+            objective: 'FASTEST',
+            mapDataPb: mockMapData,
+            regionId: 'bbox:1'
+        }));
 
-        // Verify standard logging
+        // Verify Stage 5 Protobuf log
         expect(logger.info).toHaveBeenCalledWith(
-            expect.stringMatching(/\[BACKEND\] \[INFO\] Map Ingestion Triggered \| Ingested: \d+KB/)
+            expect.stringContaining('Protobuf Ingestion Triggered')
         );
     });
 
     test('3. Graceful Fallback on Cache/Overpass Failure', async () => {
-        getMapData.mockRejectedValue(new Error('Overpass Timeout'));
+        getMapPayload.mockRejectedValue(new Error('Overpass Timeout'));
         calculateRouteGrpc.mockResolvedValue({ results: [] });
 
         await calculateRouteController(req, res);
 
-        // Verify gRPC was still called but with empty map data
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            req.body.start,
-            req.body.end,
-            10,
-            'FASTEST',
-            ''
-        );
-
-        // Verify warning log
-        expect(logger.warn).toHaveBeenCalledWith(
-            expect.stringContaining('[BACKEND] [WARN] Map Ingestion Failed | Falling back to static mode: Overpass Timeout')
-        );
-
-        // Verify response is still successful (using static engine fallback)
-        expect(res.status).toHaveBeenCalledWith(200);
+        // Verify response is still successful (controller returns 503 on ingestion failure)
+        expect(res.status).toHaveBeenCalledWith(503);
     });
 
     test('4. Handling Empty OSM Result gracefully', async () => {
-        getMapData.mockResolvedValue({ elements: [] }); // No roads found
+        getMapPayload.mockResolvedValue({ binary: null, region_id: '' }); 
         calculateRouteGrpc.mockResolvedValue({ results: [] });
 
         await calculateRouteController(req, res);
 
-        // Since elements.length is 0, we don't log "Ingestion Triggered" and send empty string
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            req.body.start,
-            req.body.end,
-            10,
-            'FASTEST',
-            ''
-        );
+        // Verify gRPC was called with null map data
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            start: expect.anything(),
+            end: expect.anything(),
+            mockHour: expect.anything(),
+            objective: expect.anything(),
+            mapDataPb: null,
+            regionId: ''
+        }));
     });
-
 });

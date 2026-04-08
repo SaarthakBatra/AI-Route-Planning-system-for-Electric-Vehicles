@@ -25,28 +25,48 @@ const { getMapPayload } = require('../../cache/services/osmWorker');
 const { calculateBBox } = require('../utils/bbox');
 const { storage, registerContext, unregisterContext } = require('../utils/context');
 const { getAndIncrementUID } = require('../utils/uid');
+const { validateEvParams } = require('../utils/validation');
+const { getVehicleProfile } = require('../services/evProfiles');
 
 /**
  * Maps a raw gRPC algorithm result to the standardized client-facing schema.
  * Enforces the "Failure Signature" (1,000,001 nodes) if a circuit breaker was triggered.
+ * Detects Native C++ I/O truncation and appends a directory pointer.
  * 
  * @param {Object} res - The raw response from gRPC
  * @param {number} maxNodes - The maximum node limit from environment
+ * @param {string} logDir - Current request session directory for log linking
+ * @param {number} effectiveCapacityKwh - Vehicle battery capacity for percentage calculation
  * @returns {Object} Standardized result object
  */
-const mapAlgoResult = (res, maxNodes) => {
+const mapAlgoResult = (res, maxNodes, logDir, effectiveCapacityKwh) => {
     const isBreakerHit = res.circuit_breaker_triggered || res.nodes_expanded > maxNodes;
+    let debugLogs = res.debug_logs || '';
+    
+    // v2.3.0: Detect Native C++ I/O truncation marker
+    if (debugLogs.includes('(TRUNCATED: Native I/O...)')) {
+        debugLogs += `\n\n[NOTICE] Granular logging offloaded to Direct I/O for performance. Full trace available on-disk at: Output/${logDir}/Algo_${res.algorithm}.md`;
+    }
     
     return {
         algorithm: res.algorithm,
-        polyline: isBreakerHit ? [] : (res.polyline || []),
+        polyline: isBreakerHit ? [] : (res.polyline || []).map(coord => ({
+            lat: coord.lat,
+            lng: coord.lng,
+            segment_consumed_kwh: coord.segment_consumed_kwh || 0
+        })),
         distance: isBreakerHit ? 0 : (res.distance || 0),
         duration: isBreakerHit ? 0 : (res.duration || 0),
         nodes_expanded: isBreakerHit ? (maxNodes + 1) : (res.nodes_expanded || 0),
         exec_time_ms: res.exec_time_ms || 0,
         path_cost: isBreakerHit ? 0 : (res.path_cost || 0),
         circuit_breaker_triggered: !!isBreakerHit,
-        debug_logs: res.debug_logs || ''
+        debug_logs: debugLogs,
+        // NEW (Stage 5): EV Metrics
+        arrival_soc_kwh: res.arrival_soc_kwh || 0,
+        arrival_soc_pct: effectiveCapacityKwh > 0 ? (res.arrival_soc_kwh / effectiveCapacityKwh) * 100 : 0,
+        consumed_kwh: res.consumed_kwh || 0,
+        is_charging_stop: !!res.is_charging_stop
     };
 };
 
@@ -89,8 +109,92 @@ const calculateRouteController = (req, res) => {
                 ? objective 
                 : 'FASTEST';
 
+            // Stage 5: EV Parameter Extraction & Validation
+            let ev_params = null;
+            let effectiveCapacityKwh = 0;
+            const evInput = req.body.ev_params || req.body; // Support both nested and flat for backward compatibility
+            
+            // Check for explicit EV intent or presence of identifying parameters
+            if (evInput.enabled || evInput.ev_routing || evInput.vehicle_id || evInput.payload_kg !== undefined || 
+                evInput.target_charge_bound_kwh !== undefined || evInput.is_emergency_assumption !== undefined) {
+                const { error, value } = validateEvParams(evInput);
+                if (error) {
+                    logger.error(`[BACKEND] [VALIDATION_ERROR] Invalid EV Parameters: ${error.message}`);
+                    return errorResponse(res, 400, `Invalid EV Parameters: ${error.message}`);
+                }
+
+                // Step 1: Resolve Profile (Standard EV as mandatory fallback for non-blocking execution)
+                const vehicleProfileId = value.vehicle_id || 'standard_ev';
+                const vehicle = getVehicleProfile(vehicleProfileId);
+                
+                if (!vehicle) {
+                    return errorResponse(res, 400, `Vehicle profile not found: ${vehicleProfileId}`);
+                }
+
+                logger.info(`[BACKEND] Using EV Profile: ${vehicleProfileId}`);
+
+                // Resale Validation: Protection against abusive inputs
+                if (vehicle.capacity_kwh > 500) {
+                    return errorResponse(res, 400, 'Battery capacity exceeds system limits (500kWh).');
+                }
+
+                // Step 2: Mass & Energy Resolution (Physics-First Priority)
+                // Use effective_mass_kg override if provided; else derived from Tare + Payload
+                const effective_mass_kg = value.effective_mass_kg || (vehicle.mass_kg + value.payload_kg);
+                effectiveCapacityKwh = vehicle.capacity_kwh * (value.battery_soh_pct / 100);
+                
+                // Use start_soc_kwh override if provided; else derived from Percent calculation
+                const start_soc_kwh = (value.start_soc_kwh !== undefined) ? value.start_soc_kwh : (effectiveCapacityKwh * (value.start_soc_pct / 100));
+
+                // Step 3: Construct EVParams with Override Priority (Mission > Profile > Schema Defaults)
+                ev_params = {
+                    enabled: true,
+                    effective_mass_kg,
+                    Crr: value.rolling_resistance_coeff || vehicle.rolling_resistance_coeff || 0.012,
+                    wheel_radius_m: value.wheel_radius_m || vehicle.wheel_radius_m || 0.35,
+                    ac_kw_max: vehicle.ac_kw_max,
+                    dc_kw_max: vehicle.dc_kw_max,
+                    max_regen_power_kw: vehicle.max_regen_power_kw,
+                    energy_uncertainty_margin_pct: value.energy_uncertainty_margin_pct || parseInt(process.env.ENERGY_UNCERTAINTY_MARGIN_PCT) || 5,
+                    battery_soh_pct: value.battery_soh_pct,
+                    start_soc_kwh,
+                    min_waypoint_soc_kwh: effectiveCapacityKwh * (value.min_waypoint_soc_pct / 100),
+                    min_arrival_soc_kwh: effectiveCapacityKwh * (value.min_arrival_soc_pct / 100),
+                    target_charge_bound_kwh: (value.target_charge_bound_kwh !== undefined) ? value.target_charge_bound_kwh : (effectiveCapacityKwh * (value.target_charge_bound_pct / 100)),
+                    is_emergency_assumption: !!value.is_emergency_assumption,
+                    drag_coeff: value.drag_coeff || vehicle.drag_coeff || 0.26,
+                    frontal_area_m2: value.frontal_area_m2 || vehicle.frontal_area_m2 || 2.3,
+                    regen_efficiency: value.regen_efficiency || vehicle.regen_efficiency || 0.75,
+                    aux_power_kw: value.aux_power_kw || vehicle.aux_power_kw || 1.0
+                };
+
+                logger.info(`[BACKEND] [EV_ORCHESTRATION] Mode: ${value.effective_mass_kg ? 'Custom' : 'Profile'} | Mass: ${effective_mass_kg}kg | Start SoC: ${start_soc_kwh.toFixed(1)}kWh`);
+            }
+
             logger.info(`Calculating route suite (Protobuf Mode) from (${start.lat}, ${start.lng}) to (${end.lat}, ${end.lng}) [Hour: ${validatedHour}, Obj: ${validatedObjective}]`);
             
+            // Sync Search Limits & Diagnostics
+            const maxNodes = parseInt(process.env.ALGO_MAX_NODES) || 10000000;
+            let socStep = parseFloat(process.env.SOC_DISCRETIZATION_STEP) || 0.1;
+            if (socStep <= 0) socStep = 0.1; // Safety clamp for engine stability
+            
+            // v2.3.0 C++ Native logging/watchdog parameters
+            const killTimeMs = parseInt(process.env.ALGO_KILL_TIME_MS) || 60000;
+            const debugNodeInterval = parseInt(process.env.ALGO_DEBUG_NODE_INTERVAL) || 5000;
+
+            const epsilonMin = parseFloat(process.env.ROUTING_EPSILON_MIN) || 10.0;
+            const bandingShortest = parseFloat(process.env.ROUTING_IDA_BANDING_SHORTEST) || 10.0;
+            const bandingFastest = parseFloat(process.env.ROUTING_IDA_BANDING_FASTEST) || 1.0;
+
+            // Legacy Diagnostic Parameters (For Backward Compatibility)
+            const debugLogCap = parseInt(process.env.ROUTING_DEBUG_LOG_CAP) || 1000000;
+            const logFlushNodes = parseInt(process.env.ROUTING_LOG_FLUSH_NODES) || 500000;
+            const logFlushInterval = parseInt(process.env.ROUTING_LOG_FLUSH_INTERVAL) || 5;
+            const logInterval = parseInt(process.env.ROUTING_LOG_INTERVAL) || 250000;
+
+            const debugMode = process.env.ENGINE_SIMULATOR === 'true';
+            const algoDebug = process.env.ALGO_DEBUG === 'true';
+
             // Step 4: Map Graph Persistence (Protobuf Ingestion)
             let mapDataPb = null;
             let regionId = '';
@@ -113,7 +217,29 @@ const calculateRouteController = (req, res) => {
             // Trigger 5-algorithm search via gRPC (v2 Protobuf First)
             let grpcResponse;
             try {
-                grpcResponse = await calculateRouteGrpc(start, end, validatedHour, validatedObjective, mapDataPb, regionId);
+                logger.debug("[BACKEND] Final gRPC EV Params: " + JSON.stringify(ev_params));
+                grpcResponse = await calculateRouteGrpc({
+                    start,
+                    end,
+                    mockHour: validatedHour,
+                    objective: validatedObjective,
+                    mapDataPb,
+                    regionId,
+                    evParams: ev_params,
+                    maxNodes,
+                    socStep,
+                    killTimeMs,
+                    debugNodeInterval,
+                    epsilonMin,
+                    bandingShortest,
+                    bandingFastest,
+                    debugLogCap,
+                    logFlushNodes,
+                    logFlushInterval,
+                    logInterval,
+                    algoDebug,
+                    debugMode
+                });
             } catch (grpcErr) {
                 // Semantic gRPC Error Mapping (v1.x -> v2.x)
                 if (grpcErr.code === grpc.status.DEADLINE_EXCEEDED) {
@@ -126,11 +252,10 @@ const calculateRouteController = (req, res) => {
             }
 
             // Step 3 Standardized Response: Results Array Interface
-            const maxNodes = parseInt(process.env.ALGO_MAX_NODES) || 1000000;
             const responseData = {
                 success: true,
                 data: {
-                    results: (grpcResponse.results || []).map(r => mapAlgoResult(r, maxNodes))
+                    results: (grpcResponse.results || []).map(r => mapAlgoResult(r, maxNodes, logDir, effectiveCapacityKwh))
                 }
             };
 

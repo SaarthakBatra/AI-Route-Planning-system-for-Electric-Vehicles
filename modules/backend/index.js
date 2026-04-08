@@ -17,6 +17,7 @@ const cors = require('cors');
 const routeApi = require('./routes/routeApi');
 const logger = require('./utils/logger');
 const requestLogger = require('./utils/requestLogger');
+const database = require('../database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,10 +34,30 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'UP' });
 });
 
+/**
+ * Orchestrates the server startup sequence.
+ * Ensures that the MongoDB connection is established via the database module
+ * BEFORE the Express server begins listening for HTTP requests.
+ * 
+ * If the connection fails, the process logs a CRITICAL error and exits with code 1.
+ */
+const startServer = async () => {
+    try {
+        logger.info('Initializing Backend Startup Sequence...');
+        await database.connectMongo();
+        
+        app.listen(PORT, () => {
+            logger.info(`Backend module listening on port ${PORT}`);
+        });
+    } catch (err) {
+        logger.error(`CRITICAL: Server failed to start due to database connection error: ${err.message}`);
+        process.exit(1);
+    }
+};
+
 if (require.main === module) {
-    app.listen(PORT, () => {
-        logger.info(`Backend module listening on port ${PORT}`);
-    });
+    startServer();
 }
 
+app.startServer = startServer;
 module.exports = app;

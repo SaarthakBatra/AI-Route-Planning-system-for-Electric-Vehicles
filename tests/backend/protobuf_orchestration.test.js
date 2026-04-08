@@ -52,17 +52,17 @@ describe('Protobuf Orchestration Test (Step 4)', () => {
         expect(getMapPayload).toHaveBeenCalled();
         
         // Verify gRPC was called with binary data and region_id
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            { lat: 40.7128, lng: -74.0060 },
-            { lat: 40.7306, lng: -73.9866 },
-            14,
-            'FASTEST',
-            mockBinary,
-            mockRegionId
-        );
+        expect(calculateRouteGrpc).toHaveBeenCalledWith(expect.objectContaining({
+            start: { lat: 40.7128, lng: -74.0060 },
+            end: { lat: 40.7306, lng: -73.9866 },
+            mockHour: 14,
+            objective: 'FASTEST',
+            mapDataPb: mockBinary,
+            regionId: mockRegionId
+        }));
     });
 
-    it('should fallback to static mode if getMapPayload fails', async () => {
+    it('should return 503 if getMapPayload fails (Fail-Safe Operation)', async () => {
         getMapPayload.mockRejectedValue(new Error('Cache service down'));
 
         calculateRouteGrpc.mockResolvedValue({
@@ -76,15 +76,11 @@ describe('Protobuf Orchestration Test (Step 4)', () => {
                 end: { lat: 40.7306, lng: -73.9866 }
             });
             
-        expect(response.status).toBe(200);
-        // Verify gRPC was called with null binary and empty region_id
-        expect(calculateRouteGrpc).toHaveBeenCalledWith(
-            { lat: 40.7128, lng: -74.0060 },
-            { lat: 40.7306, lng: -73.9866 },
-            12, // Default hour
-            'FASTEST', // Default objective
-            null,
-            ''
-        );
+        expect(response.status).toBe(503);
+        expect(response.body.error).toBe(true);
+        expect(response.body.message).toContain('Map Data Unavailable');
+        
+        // Verify gRPC was NOT called (Request aborted)
+        expect(calculateRouteGrpc).not.toHaveBeenCalled();
     });
 });

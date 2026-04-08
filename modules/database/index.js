@@ -21,7 +21,9 @@ require('dotenv').config({ path: path.join(__dirname, '../../.env') });
  * REQUIRES MONGO_URI to be set in modules/database/.env or root .env
  */
 
-const { connectMongo, disconnectMongo } = require('./services/mongoClient');
+const mongoClient = require('./services/mongoClient');
+const chargerService = require('./services/chargerService');
+const tileKey = require('./utils/tileKey');
 const logger = require('./utils/logger');
 
 /**
@@ -44,12 +46,12 @@ const runHealthCheck = async () => {
     logger.call('runHealthCheck', 'none');
 
     try {
-        const readyState = await connectMongo();
+        const readyState = await mongoClient.connectMongo();
         logger.info(`Health check PASSED — ReadyState: ${readyState}`);
         logger.done('runHealthCheck', 'Connection successful');
 
         logger.info('Health check complete. Disconnecting from MongoDB...');
-        await disconnectMongo();
+        await mongoClient.disconnectMongo();
     } catch (err) {
         logger.error(`Health check FAILED | error: ${err.message}`);
         logger.error('Ensure MONGO_URI in modules/database/.env or root .env is correctly set.');
@@ -57,6 +59,19 @@ const runHealthCheck = async () => {
     }
 };
 
-// Autostart the health check when run as a standalone script
-runHealthCheck();
+// Autostart the health check ONLY when run as a standalone script (node index.js)
+if (require.main === module) {
+    runHealthCheck();
+}
+
+/**
+ * Public API for the Database Module.
+ * Provides singleton connection management and charger storage services.
+ */
+module.exports = {
+    ...mongoClient,
+    chargerService,
+    tileKey,
+    logger
+};
 

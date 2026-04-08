@@ -79,6 +79,7 @@ sequenceDiagram
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `ROUTING_MAX_NODES` | `1,000,000` | Circuit breaker for node expansion. |
+| `ROUTING_LOG_INTERVAL` | `250,000` | Frequency of progress logging (nodes). |
 | `ALGO_DEBUG` | `false` | Deep step-by-step Markdown tracing. |
 | `DEBUG_MODE` | `false` | Dummy tracer for gRPC testing. |
 | `GRPC_MAX_MESSAGE_SIZE` | `100MB` | Payload limit for large OSM maps. |
@@ -99,7 +100,23 @@ This triggers a **"LIMIT EXCEEDED"** badge in the UI and red-themed glassmorphis
 
 ## 7. Version History & Updates
 
-### v2.0.4 (Current)
+### v2.2.0 (Current)
+- **Zero-Context Hardening**: Strictly enforces metadata-only parameterization for search hyperparameters; eliminates local environment dependencies via diagnostic fallback warnings.
+- **Heartbeat Verification**: Implemented automated diagnostic tests for dynamic, orchestrator-controlled `log-flush-interval`.
+
+### v2.1.2
+- **Metadata-Driven Orchestration**: Fully decoupled engine from local `.env` files; transitioned to dynamic gRPC metadata injection.
+- **Diagnostics**: Implemented periodic progress logging across all 5 algorithms.
+
+### v2.1.1
+- **Traceability**: Implemented 'Unnamed Node' fallbacks and explicit SoC-pruning traces for all 5 algorithms.
+- **Reliability**: Added internal `get_node_name` helper to ensure zero-crash logging on incomplete OSM data.
+
+### v2.1.0
+- **Stage 5 EV Physics**: Implemented RCSPP with high-fidelity modeling (Aux Power, Aero Drag, Regen Efficiency).
+- **Safety**: Added strict Arrival SoC enforcement with `target_found` search gating.
+
+### v2.0.4
 - **Quality Guardian**: Implemented Failure Signature protocol across all 5 algorithms.
 - **Robustness**: Added NaN/Inf weight validation for dynamic ingestion.
 - **Doc**: Full Doxygen/PEP257 comment coverage.
@@ -123,6 +140,8 @@ This triggers a **"LIMIT EXCEEDED"** badge in the UI and red-themed glassmorphis
 
 | Issue | Root Cause | Resolution |
 | :--- | :--- | :--- |
+| **Message Size** | maps exceeding 4MB default. | `server.py`. |
+| **Diagnostic Invisibility** | Search trace lost when circuit breaker hit. | Standardized `debug_logs` population and added `[TERMINATED]` headers. |
 | **IDA* Stagnation** | Fractional edge costs causing sub-millimeter threshold jumps. | Implemented **Epsilon Cost-Bucketing** to enforce minimum step size. |
 | **O(N²) Ingestion** | Linear search for OSM ID matching during edge creation. | Refactored to **O(1) Array Indexing** using quantized internal IDs. |
 | **gRPC Message Exhaustion** | 50k+ Node maps exceeding 4MB default. | Increased `GRPC_MAX_MESSAGE_SIZE` to **100MB** in `server.py`. |

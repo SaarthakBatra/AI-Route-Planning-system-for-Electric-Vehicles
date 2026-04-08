@@ -28,6 +28,7 @@
  * - IDA*: Iterative Deepening A* with Precision Banding and Geometric Overshoot (v2.0.2).
  */
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <utility>
 #include <chrono>
@@ -57,6 +58,19 @@ struct Node {
     double lat, lng;
     std::string name;
     int component_id = -1; // Added for island detection
+
+    // Stage 5 EV Data
+    double elevation = 0.0;
+    double elevation_confidence = 1.0;
+    bool is_charger = false;
+    std::string charger_type = "NONE";
+    double kw_output = 0.0;
+    bool is_operational = true;
+    bool is_emergency_assumption = false;
+};
+
+struct RoutePoint {
+    double lat, lng, energy;
 };
 
 struct Edge {
@@ -73,19 +87,57 @@ struct Graph {
 
 struct AlgorithmResult {
     std::string algorithm;
-    std::vector<std::pair<double, double>> path;
-    double distance_m;
-    double duration_s;
-    int nodes_expanded;
-    double exec_time_ms;
-    double path_cost;
+    std::vector<RoutePoint> path;
+    double distance_m = 0.0;
+    double duration_s = 0.0;
+    int nodes_expanded = 0;
+    double exec_time_ms = 0.0;
+    double path_cost = 0.0;
     std::string debug_logs;
-    bool circuit_breaker_triggered = false; // Added to track limit hits
+    bool circuit_breaker_triggered = false;
+
+    // Stage 5 EV Execution Data
+    double arrival_soc_kwh = 0.0;
+    double consumed_kwh = 0.0;
+    bool is_charging_stop = false;
 };
 
 enum class Objective {
     FASTEST = 0,
     SHORTEST = 1
+};
+
+enum class PortType {
+    UNKNOWN_PORT = 0,
+    IEC_62196_T2 = 1,
+    CHADEMO = 2,
+    CCS1 = 3,
+    CCS2 = 4,
+    TESLA_S = 5,
+    BHARAT_DC = 6,
+    WALL_PLUG = 7
+};
+
+struct EVParams {
+    bool enabled = false;
+    double effective_mass_kg = 1800.0;
+    double Crr = 0.012;
+    double wheel_radius_m = 0.35;
+    double ac_kw_max = 11.0;
+    double dc_kw_max = 250.0;
+    double max_regen_power_kw = 60.0;
+    double energy_uncertainty_margin_pct = 5.0;
+    double battery_soh_pct = 100.0;
+    double start_soc_kwh = 60.0;
+    double min_waypoint_soc_kwh = 6.0;
+    double min_arrival_soc_kwh = 12.0;
+    double target_charge_bound_kwh = 48.0;
+
+    // NEW (v2.1.0): Enhanced physical coefficients
+    double drag_coeff = 0.23;         // Default Cd (Tesla Model 3 class)
+    double frontal_area_m2 = 2.22;    // Default A (Tesla Model 3 class)
+    double regen_efficiency = 0.75;   // Energy recovery factor
+    double aux_power_kw = 0.5;        // Idle electronics load
 };
 
 // ─── Graph Cache (LRU) ────────────────────────────────────────────────────────
@@ -111,7 +163,7 @@ enum class Objective {
 //   - Concurrent gRPC calls on DIFFERENT region_ids: no contention after lookup.
 
 struct GraphCacheEntry {
-    Graph graph;
+    std::shared_ptr<const Graph> graph;
     double max_speed;
 };
 
@@ -131,14 +183,15 @@ static std::mutex s_graph_cache_mutex;
  * @pre MUST be called with s_graph_cache_mutex held.
  */
 static void cache_insert(const std::string& region_id,
-                         GraphCacheEntry&& entry,
+                         std::shared_ptr<const Graph> graph_ptr,
+                         double max_speed,
                          int max_size) {
     auto it = s_graph_cache.find(region_id);
     if (it != s_graph_cache.end()) {
         // Already cached: refresh LRU position and update entry
         s_lru_order.erase(it->second.second);
         s_lru_order.push_front(region_id);
-        it->second.first = std::move(entry);
+        it->second.first = {graph_ptr, max_speed};
         it->second.second = s_lru_order.begin();
         return;
     }
@@ -149,7 +202,7 @@ static void cache_insert(const std::string& region_id,
         s_lru_order.pop_back();
     }
     s_lru_order.push_front(region_id);
-    s_graph_cache[region_id] = {std::move(entry), s_lru_order.begin()};
+    s_graph_cache[region_id] = {{graph_ptr, max_speed}, s_lru_order.begin()};
 }
 
 /**
@@ -200,6 +253,13 @@ double to_radians(double degree) {
 }
 
 /**
+ * @brief Returns a descriptive name for a node, falling back to 'Unnamed Node'.
+ */
+inline std::string get_node_name(const Node& n) {
+    return n.name.empty() ? "Unnamed Node" : n.name;
+}
+
+/**
  * @brief Calculates the Haversine distance between two sets of lat/lng coordinates.
  * @return Distance in meters.
  */
@@ -211,6 +271,55 @@ double haversine(double lat1, double lng1, double lat2, double lng2) {
                std::sin(dLng / 2) * std::sin(dLng / 2);
     double c = 2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
     return 6371000.0 * c; // Earth radius in meters
+}
+
+// --- EV Physics Constants & Helpers ---
+static constexpr double GRAVITY = 9.81;
+static constexpr double AIR_DENSITY = 1.225;
+
+/**
+ * @brief Calculates the energy consumed (or regained) across an edge.
+ * 
+ * @param dist_m Distance in meters.
+ * @param speed_mps Speed in meters per second.
+ * @param grade_sin Sine of the inclination angle (elevation_diff / dist).
+ * @param p Physical parameters of the vehicle.
+ * @return double Energy in kWh.
+ */
+double calculate_ev_energy_kwh(double dist_m, double speed_mps, double grade_sin, const EVParams& p) {
+    if (dist_m <= 0) return 0.0;
+    
+    double cos_theta = std::sqrt(1.0 - grade_sin * grade_sin);
+    
+    // 1. Forces (Newtons)
+    double F_rolling = p.Crr * p.effective_mass_kg * GRAVITY * cos_theta;
+    double F_drag = 0.5 * AIR_DENSITY * p.drag_coeff * p.frontal_area_m2 * speed_mps * speed_mps;
+    double F_grade = p.effective_mass_kg * GRAVITY * grade_sin;
+    
+    double F_total = F_rolling + F_drag + F_grade;
+    double Work_Joules = F_total * dist_m;
+    
+    double trip_duration_s = dist_m / speed_mps;
+    
+    // 2. Auxilliary Consumption (Electronics, HVAC) - Always Positive
+    double E_aux_kwh = (p.aux_power_kw * trip_duration_s) / 3600.0;
+    
+    double E_traction_kwh = 0.0;
+    if (Work_Joules < 0) {
+        // Regenerative Braking Logic
+        double Power_Watts = std::abs(Work_Joules / trip_duration_s);
+        double P_regen_max_watts = p.max_regen_power_kw * 1000.0;
+        double P_actual_regen = std::min(Power_Watts, P_regen_max_watts);
+        
+        // Convert back to Joules for this segment and apply efficiency
+        double Work_Regen_Joules = -P_actual_regen * trip_duration_s * p.regen_efficiency;
+        E_traction_kwh = Work_Regen_Joules / 3600000.0; 
+    } else {
+        // Apply safety margin to positive traction consumption
+        E_traction_kwh = (Work_Joules / 3600000.0) * (1.0 + p.energy_uncertainty_margin_pct / 100.0);
+    }
+    
+    return E_traction_kwh + E_aux_kwh;
 }
 
 // --- Static Graph Data ---
@@ -374,20 +483,64 @@ double get_traffic_multiplier(int mock_hour, const std::string& road_type) {
     return 2.0;
 }
 
-double calculate_edge_cost(const Edge& edge, Objective objective, int mock_hour) {
-    if (objective == Objective::SHORTEST) {
-        return edge.weight_m;
+struct EdgeCost {
+    double scalar_cost;
+    double duration_s;
+    double energy_kwh;
+};
+
+EdgeCost calculate_edge_costs(int u, int v, const Edge& edge, Objective objective, int mock_hour, const Graph& g, const EVParams& ev) {
+    EdgeCost ec;
+    double multiplier = get_traffic_multiplier(mock_hour, edge.road_type);
+    double speed_mps = (edge.speed_kmh / 3.6) / multiplier;
+    
+    ec.duration_s = edge.weight_m / speed_mps;
+    
+    if (ev.enabled) {
+        double el_diff = g.nodes[v].elevation - g.nodes[u].elevation;
+        double grade_sin = (edge.weight_m > 0) ? std::min(1.0, std::max(-1.0, el_diff / edge.weight_m)) : 0.0;
+        ec.energy_kwh = calculate_ev_energy_kwh(edge.weight_m, speed_mps, grade_sin, ev);
+        
+        // Thermal Pre-conditioning spike if destination is DC Fast Charger
+        if (g.nodes[v].is_charger && g.nodes[v].kw_output >= 50.0) {
+            ec.energy_kwh += 1.5; // ~30 mins of pre-conditioning (simplified spike)
+        }
     } else {
-        double multiplier = get_traffic_multiplier(mock_hour, edge.road_type);
-        double baseline_s = edge.weight_m / (edge.speed_kmh / 3.6);
-        return baseline_s * multiplier;
+        ec.energy_kwh = 0.0;
     }
+
+    if (objective == Objective::SHORTEST) {
+        ec.scalar_cost = edge.weight_m;
+    } else {
+        ec.scalar_cost = ec.duration_s;
+    }
+    
+    return ec;
 }
 
 // --- Heuristics ---
-double get_heuristic(int n, int target, Objective objective, const Graph& g, double max_speed) {
+double get_heuristic(int n, int target, Objective objective, const Graph& g, double max_speed, const EVParams& ev) {
     double dist = haversine(g.nodes[n].lat, g.nodes[n].lng,
                             g.nodes[target].lat, g.nodes[target].lng);
+    if (ev.enabled) {
+        // Admissible EV Energy Heuristic:
+        // 1. Min possible rolling resistance (flat)
+        // 2. Max possible regen (steepest possible drop to target elevation)
+        double el_diff = g.nodes[target].elevation - g.nodes[n].elevation;
+        double grade_sin = (dist > 0) ? std::min(1.0, std::max(-1.0, el_diff / dist)) : 0.0;
+        
+        // Assume flat for conservative rolling cost
+        double F_rolling_min = ev.Crr * ev.effective_mass_kg * GRAVITY;
+        double E_min_rolling_kwh = (F_rolling_min * dist) / 3600000.0;
+        
+        if (el_diff < 0) {
+            // Potential for regen
+            double E_regen_max_kwh = (ev.effective_mass_kg * GRAVITY * std::abs(el_diff) * 0.75) / 3600000.0;
+            return std::max(0.0, E_min_rolling_kwh - E_regen_max_kwh);
+        }
+        return E_min_rolling_kwh;
+    }
+
     if (objective == Objective::SHORTEST) {
         return dist;
     } else {
@@ -395,8 +548,30 @@ double get_heuristic(int n, int target, Objective objective, const Graph& g, dou
     }
 }
 
-// --- Path Reconstruction ---
-AlgorithmResult reconstruct_path(const std::vector<int>& prev, int start_node, int end_node, const std::string& algo_name, int nodes_expanded, double exec_time, Objective objective, int mock_hour, const Graph& g) {
+// --- State-Lineage Tracker (EV Mode) ---
+/**
+ * @struct SearchState
+ * @brief Represents a unique point in the search frontier to isolate lineages.
+ * 
+ * In Multi-Objective EV routing, multiple non-dominated paths can reach 
+ * the same node. Using a scalar node-based 'prev' map causes pointer overwrites
+ * and infinite loops. This struct allows us to backtrack through the exact
+ * state-to-state parent chain, avoiding graph topology cycles entirely.
+ */
+struct SearchState {
+    int u;             // Internal Node ID
+    int parent_idx;    // Index of the parent SearchState in the local 'states' vector
+    double cost;       // Cumulative scalar cost (Time or Distance)
+    double soc;        // Absolute State of Charge at this point
+    bool is_charging_stop = false; // Flag for charging branches (v2.5.0)
+};
+
+/**
+ * @brief RECONSTRUCTION (EV MODE): Backtracks through discrete search states.
+ * This version is 100% cycle-safe as it follows parent indices in the state 
+ * repository rather than overwritable node pointers.
+ */
+AlgorithmResult reconstruct_path_from_states(const std::vector<SearchState>& states, int target_state_idx, const std::string& algo_name, int nodes_expanded, double exec_time, Objective objective, int mock_hour, const Graph& g, const EVParams& ev) {
     AlgorithmResult res;
     res.algorithm = algo_name;
     res.nodes_expanded = nodes_expanded;
@@ -404,6 +579,64 @@ AlgorithmResult reconstruct_path(const std::vector<int>& prev, int start_node, i
     res.distance_m = 0;
     res.duration_s = 0;
     res.path_cost = 0;
+    res.consumed_kwh = 0;
+    res.arrival_soc_kwh = ev.enabled ? ev.start_soc_kwh : 0.0;
+
+    if (target_state_idx == -1) return res;
+
+    std::vector<SearchState> path_states;
+    for (int at = target_state_idx; at != -1; at = states[at].parent_idx) {
+        path_states.push_back(states[at]);
+        if (states[at].parent_idx == -1) break; // Reached start
+    }
+    std::reverse(path_states.begin(), path_states.end());
+
+    for (size_t i = 0; i < path_states.size(); ++i) {
+        int u = path_states[i].u;
+        double seg_energy = 0.0;
+
+        if (i > 0) {
+            int p = path_states[i - 1].u;
+            
+            // Check if this was a charging stop (Self-Loop)
+            if (path_states[i].is_charging_stop && u == p) {
+                seg_energy = -(path_states[i].soc - path_states[i-1].soc); // Negative consumption = gain
+                res.duration_s += (path_states[i].cost - path_states[i-1].cost);
+            } else {
+                for (const auto& edge : g.adjacency_list[p]) {
+                    if (edge.to == u) {
+                        EdgeCost ec = calculate_edge_costs(p, u, edge, objective, mock_hour, g, ev);
+                        res.path_cost += ec.scalar_cost;
+                        res.distance_m += edge.weight_m;
+                        res.duration_s += ec.duration_s;
+                        res.consumed_kwh += ec.energy_kwh;
+                        seg_energy = ec.energy_kwh;
+                        break;
+                    }
+                }
+            }
+        }
+        res.path.push_back({g.nodes[u].lat, g.nodes[u].lng, seg_energy});
+    }
+    
+    if (ev.enabled) {
+        res.arrival_soc_kwh -= res.consumed_kwh;
+    }
+    
+    return res;
+}
+
+// --- Path Reconstruction (Standard Mode - O(1) Fast Trace) ---
+AlgorithmResult reconstruct_path(const std::vector<int>& prev, int start_node, int end_node, const std::string& algo_name, int nodes_expanded, double exec_time, Objective objective, int mock_hour, const Graph& g, const EVParams& ev) {
+    AlgorithmResult res;
+    res.algorithm = algo_name;
+    res.nodes_expanded = nodes_expanded;
+    res.exec_time_ms = exec_time;
+    res.distance_m = 0;
+    res.duration_s = 0;
+    res.path_cost = 0;
+    res.consumed_kwh = 0;
+    res.arrival_soc_kwh = ev.enabled ? ev.start_soc_kwh : 0.0;
 
     if (prev[end_node] == -1 && start_node != end_node) return res;
 
@@ -416,21 +649,29 @@ AlgorithmResult reconstruct_path(const std::vector<int>& prev, int start_node, i
 
     for (size_t i = 0; i < path_ids.size(); ++i) {
         int u = path_ids[i];
-        res.path.push_back({g.nodes[u].lat, g.nodes[u].lng});
+        double seg_energy = 0.0;
 
         if (i > 0) {
             int p = path_ids[i - 1];
             for (const auto& edge : g.adjacency_list[p]) {
                 if (edge.to == u) {
-                    double edge_cost = calculate_edge_cost(edge, objective, mock_hour);
-                    res.path_cost += edge_cost;
+                    EdgeCost ec = calculate_edge_costs(p, u, edge, objective, mock_hour, g, ev);
+                    res.path_cost += ec.scalar_cost;
                     res.distance_m += edge.weight_m;
-                    res.duration_s += (objective == Objective::FASTEST) ? edge_cost : (edge.weight_m / (edge.speed_kmh / 3.6));
+                    res.duration_s += ec.duration_s;
+                    res.consumed_kwh += ec.energy_kwh;
+                    seg_energy = ec.energy_kwh;
                     break;
                 }
             }
         }
+        res.path.push_back({g.nodes[u].lat, g.nodes[u].lng, seg_energy});
     }
+    
+    if (ev.enabled) {
+        res.arrival_soc_kwh -= res.consumed_kwh;
+    }
+    
     return res;
 }
 
@@ -448,68 +689,191 @@ AlgorithmResult reconstruct_path(const std::vector<int>& prev, int start_node, i
  * @param max_nodes Circuit breaker node limit.
  * @return AlgorithmResult containing the path and stats.
  */
-AlgorithmResult run_bfs(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, int max_nodes) {
-    auto start_time = std::chrono::high_resolution_clock::now();
+AlgorithmResult run_bfs(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, const std::string& output_dir, int kill_time_ms, int debug_node_interval, int max_nodes, double soc_step, const EVParams& ev) {
+    auto start_time = std::chrono::steady_clock::now();
     std::ostringstream oss;
+    std::ofstream outfile;
+
+    if (debug_enabled && output_dir.empty()) debug_enabled = false;
+    
     if (debug_enabled) {
-        oss << "# BFS Debug Log\n";
-        oss << "- Start: " << start << " (" << g.nodes[start].name << ")\n";
-        oss << "- Target: " << end << " (" << g.nodes[end].name << ")\n\n";
+        outfile.open(output_dir + "/Algo_BFS.md");
+        outfile << "# BFS Debug Log (EV: " << (ev.enabled ? "ON" : "OFF") << ")\n";
+        outfile << "- Start: " << start << " (" << get_node_name(g.nodes[start]) << ")\n";
+        outfile << "- Target: " << end << " (" << get_node_name(g.nodes[end]) << ")\n\n";
+        outfile << "| Step | Node ID | Cost | SoC |\n|---|---|---|---|\n";
     }
 
-    std::queue<int> q;
+    struct Label {
+        int u;
+        double soc;
+        int state_idx; // Index in the 'states' repository
+        int hops;      // Track hops for Pareto
+    };
+
+    std::queue<Label> q;
+    std::vector<SearchState> states; // Repository for EV path reconstruction
+    std::vector<std::vector<std::pair<int, int>>> fronts(g.nodes.size()); // (soc_bin, hops)
     std::vector<int> prev(g.nodes.size(), -1);
-    std::vector<bool> visited(g.nodes.size(), false);
+    std::vector<double> best_soc(g.nodes.size(), -1.0);
     int nodes_expanded = 0;
     bool triggered = false;
+    bool target_found = false;
+    int target_state_idx = -1;
     
-    q.push(start);
-    visited[start] = true;
+    double start_soc = ev.enabled ? ev.start_soc_kwh : 0.0;
+    if (ev.enabled) {
+        int start_bin = static_cast<int>(std::round(start_soc / soc_step));
+        states.push_back({start, -1, 0.0, start_soc});
+        q.push({start, start_soc, 0, 0});
+        fronts[start].push_back({start_bin, 0});
+    } else {
+        q.push({start, 0.0, -1, 0});
+        best_soc[start] = 0.0;
+    }
     
     while (!q.empty()) {
-        int u = q.front(); q.pop();
+        Label curr = q.front(); q.pop();
+        int u = curr.u;
+        double s = curr.soc;
+        int h = curr.hops;
+
         nodes_expanded++;
 
-        if (nodes_expanded > max_nodes) {
-            triggered = true;
-            if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
-            break;
+        // --- NATIVE WATCHDOG (v2.3.1 - Detached from Debugging) ---
+        if (nodes_expanded % debug_node_interval == 0) {
+            auto curr_perf_time = std::chrono::steady_clock::now();
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_perf_time - start_time).count();
+            if (kill_time_ms > 0 && elapsed_ms > kill_time_ms) {
+                if (debug_enabled) {
+                    outfile << "| TERMINATED | " << g.nodes[u].id << " | Time Limit Exceeded (" << elapsed_ms << "ms) | - |\n";
+                    outfile.flush();
+                }
+                triggered = true;
+                break;
+            }
         }
         
         if (debug_enabled) {
-            oss << "### Step " << nodes_expanded << ": Expanding Node " << u << " (" << g.nodes[u].name << ")\n";
-            oss << "- Queue Size: " << q.size() << "\n";
+            oss << "| " << nodes_expanded << " | " << g.nodes[u].id << " | " << 0.0 << " | " << s << " |\n";
+            if (nodes_expanded % debug_node_interval == 0) {
+                // Hardware Sink
+                outfile << oss.str();
+                outfile.flush();
+                oss.str(""); oss.clear();
+            }
         }
 
-        if (u == end) {
-            if (debug_enabled) oss << "- **Target Reached!**\n";
+        if (nodes_expanded > max_nodes) {
+            triggered = true;
+            if (debug_enabled) {
+                oss << "[TERMINATED] **Circuit Breaker Triggered!** | Expanded: " << max_nodes 
+                    << " nodes | Last Node: " << g.nodes[u].id << " (" << get_node_name(g.nodes[u]) << ")"
+                    << " | Best SoC so far: " << s << "kWh.\n";
+            }
             break;
         }
-
-        for (const auto& edge : g.adjacency_list[u]) {
-            if (!visited[edge.to]) {
-                visited[edge.to] = true;
-                prev[edge.to] = u;
-                q.push(edge.to);
+        
+        if (u == end) {
+            if (ev.enabled && s < ev.min_arrival_soc_kwh) {
                 if (debug_enabled) {
-                    oss << "  - Added neighbor: " << edge.to << " (" << g.nodes[edge.to].name << ")\n";
+                    oss << "[DEBUG] Goal Node " << g.nodes[u].id << " reached but SoC " << s << " < " << ev.min_arrival_soc_kwh << ". Checking for charging options...\n";
+                }
+                // Don't 'continue' here, allow charging state expansion below to potentially satisfy SoC.
+            } else {
+                target_found = true;
+                target_state_idx = curr.state_idx;
+                break;
+            }
+        }
+
+        // --- CHARGING STATE EXPANSION (v2.5.0) ---
+        if (ev.enabled && g.nodes[u].is_charger && g.nodes[u].is_operational) {
+            if (s < ev.target_charge_bound_kwh) {
+                double charge_amount = ev.target_charge_bound_kwh - s;
+                double kw = g.nodes[u].kw_output;
+                if (kw <= 0.0) kw = g.nodes[u].is_emergency_assumption ? 3.0 : 50.0;
+                
+                double charge_time_s = (charge_amount / kw) * 3600.0;
+                double next_soc = ev.target_charge_bound_kwh;
+                int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                int next_h = h + 1;
+                
+                bool dominated = false;
+                for (const auto& f : fronts[u]) {
+                    if (f.first >= next_soc_bin && f.second <= next_h) { dominated = true; break; }
+                }
+                
+                if (!dominated) {
+                    fronts[u].push_back({next_soc_bin, next_h});
+                    int next_idx = static_cast<int>(states.size());
+                    states.push_back({u, curr.state_idx, 0.0, next_soc, true}); 
+                    q.push({u, next_soc, next_idx, next_h});
                 }
             }
         }
-        if (debug_enabled) oss << "\n";
+
+        for (const auto& edge : g.adjacency_list[u]) {
+            EdgeCost ec = calculate_edge_costs(u, edge.to, edge, obj, hour, g, ev);
+            double next_soc = ev.enabled ? (s - ec.energy_kwh) : 0.0;
+            bool should_update = false;
+
+            if (ev.enabled && next_soc < ev.min_waypoint_soc_kwh) continue;
+
+            if (best_soc[edge.to] == -1.0) {
+                should_update = true;
+            } else if (ev.enabled) {
+                int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                int next_h = h + 1;
+                bool dominated = false;
+                for (const auto& f : fronts[edge.to]) {
+                    if (f.first >= next_soc_bin && f.second <= next_h) {
+                        dominated = true; break;
+                    }
+                }
+                if (!dominated) should_update = true;
+            }
+
+            if (should_update) {
+                best_soc[edge.to] = next_soc;
+                if (!ev.enabled) {
+                    prev[edge.to] = u;
+                    q.push({edge.to, next_soc, -1, h + 1});
+                } else {
+                    int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                    int next_h = h + 1;
+                    auto& f_to = fronts[edge.to];
+                    f_to.erase(std::remove_if(f_to.begin(), f_to.end(), [&](const std::pair<int, int>& f){
+                        return f.first <= next_soc_bin && f.second >= next_h;
+                    }), f_to.end());
+                    f_to.push_back({next_soc_bin, next_h});
+
+                    int next_idx = static_cast<int>(states.size());
+                    states.push_back({edge.to, curr.state_idx, 0.0, next_soc});
+                    q.push({edge.to, next_soc, next_idx, next_h});
+                }
+            }
+        }
     }
     
-    auto end_time = std::chrono::high_resolution_clock::now();
+    auto end_time = std::chrono::steady_clock::now();
     double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    AlgorithmResult res = reconstruct_path(prev, start, end, "BFS", nodes_expanded, exec_time, obj, hour, g);
+    AlgorithmResult res;
+    if (target_found) {
+        if (ev.enabled) {
+            res = reconstruct_path_from_states(states, target_state_idx, "BFS", nodes_expanded, exec_time, obj, hour, g, ev);
+        } else {
+            res = reconstruct_path(prev, start, end, "BFS", nodes_expanded, exec_time, obj, hour, g, ev);
+        }
+    } else {
+        res.algorithm = "BFS";
+        res.nodes_expanded = nodes_expanded;
+        res.exec_time_ms = exec_time;
+    }
     res.debug_logs = oss.str();
     res.circuit_breaker_triggered = triggered;
     if (triggered) {
-        // --- Failure Signature Protocol ---
         res.nodes_expanded = max_nodes + 1;
-        res.distance_m = 0;
-        res.duration_s = 0;
-        res.path_cost = 0;
         res.path.clear();
     }
     return res;
@@ -528,70 +892,210 @@ AlgorithmResult run_bfs(int start, int end, Objective obj, int hour, const Graph
  * @param max_nodes Circuit breaker node limit.
  * @return AlgorithmResult containing the path and stats.
  */
-AlgorithmResult run_dijkstra(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, int max_nodes) {
-    auto start_time = std::chrono::high_resolution_clock::now();
+AlgorithmResult run_dijkstra(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, const std::string& output_dir, int kill_time_ms, int debug_node_interval, int max_nodes, double soc_step, const EVParams& ev) {
+    auto start_time = std::chrono::steady_clock::now();
     std::ostringstream oss;
+    std::ofstream outfile;
+
+    if (debug_enabled && output_dir.empty()) debug_enabled = false;
+
     if (debug_enabled) {
-        oss << "# Dijkstra Debug Log\n";
-        oss << "- Start: " << start << " (" << g.nodes[start].name << ")\n";
-        oss << "- Target: " << end << " (" << g.nodes[end].name << ")\n";
-        oss << "- Objective: " << (obj == Objective::SHORTEST ? "Shortest" : "Fastest") << "\n\n";
+        outfile.open(output_dir + "/Algo_Dijkstra.md");
+        outfile << "# Dijkstra Debug Log (EV: " << (ev.enabled ? "ON" : "OFF") << ")\n";
+        outfile << "- Start: " << start << " (" << get_node_name(g.nodes[start]) << ")\n";
+        outfile << "- Target: " << end << " (" << get_node_name(g.nodes[end]) << ")\n";
+        outfile << "- Objective: " << (obj == Objective::SHORTEST ? "Shortest" : "Fastest") << "\n\n";
+        outfile << "| Step | Node ID | Cost | SoC |\n|---|---|---|---|\n";
     }
 
-    std::priority_queue<std::pair<double, int>, std::vector<std::pair<double, int>>, std::greater<>> pq;
-    std::vector<double> dist(g.nodes.size(), std::numeric_limits<double>::infinity());
+    struct Label {
+        double cost;
+        double soc;
+        int u;
+        int state_idx; // Index in the 'states' repository
+        bool operator>(const Label& other) const { return cost > other.cost; }
+    };
+
+    std::priority_queue<Label, std::vector<Label>, std::greater<Label>> pq;
+    std::vector<SearchState> states; // Repository for EV path reconstruction
+    std::vector<std::vector<std::pair<int, double>>> fronts(g.nodes.size()); // (soc_bin, cost)
+    std::vector<double> min_costs(g.nodes.size(), std::numeric_limits<double>::infinity());
     std::vector<int> prev(g.nodes.size(), -1);
     int nodes_expanded = 0;
     bool triggered = false;
+    bool target_found = false;
+    int target_state_idx = -1;
     
-    dist[start] = 0;
-    pq.push({0, start});
+    double start_soc = ev.enabled ? ev.start_soc_kwh : 0.0;
+    if (ev.enabled) {
+        int start_bin = static_cast<int>(std::round(start_soc / soc_step));
+        states.push_back({start, -1, 0.0, start_soc});
+        pq.push({0.0, start_soc, start, 0});
+        fronts[start].push_back({start_bin, 0.0});
+    } else {
+        pq.push({0.0, 0.0, start, -1});
+        min_costs[start] = 0.0;
+    }
     
     while (!pq.empty()) {
-        double d = pq.top().first;
-        int u = pq.top().second;
-        pq.pop();
+        Label curr = pq.top(); pq.pop();
+        int u = curr.u;
+        double c = curr.cost;
+        double s = curr.soc;
         
-        if (d > dist[u]) continue;
+        if (!ev.enabled) {
+            if (c > min_costs[u]) continue;
+        } else {
+            int soc_bin = static_cast<int>(std::round(s / soc_step));
+            bool dominated = false;
+            for (const auto& f : fronts[u]) {
+                if (f.first >= soc_bin && f.second <= c) { 
+                    if (f.first > soc_bin || f.second < c) { dominated = true; break; }
+                }
+            }
+            if (dominated && u != start) continue;
+        }
+
         nodes_expanded++;
 
-        if (nodes_expanded > max_nodes) {
-            triggered = true;
-            if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
-            break;
+        // --- NATIVE WATCHDOG (v2.3.1 - Detached from Debugging) ---
+        if (nodes_expanded % debug_node_interval == 0) {
+            auto curr_perf_time = std::chrono::steady_clock::now();
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_perf_time - start_time).count();
+            if (kill_time_ms > 0 && elapsed_ms > kill_time_ms) {
+                if (debug_enabled) {
+                    outfile << "| TERMINATED | " << g.nodes[u].id << " | Time Limit Exceeded (" << elapsed_ms << "ms) | - |\n";
+                    outfile.flush();
+                }
+                triggered = true;
+                break;
+            }
         }
         
         if (debug_enabled) {
-            oss << "### Step " << nodes_expanded << ": Expanding Node " << u << " (" << g.nodes[u].name << ")\n";
-            oss << "- Current Path Cost: " << std::fixed << std::setprecision(2) << d << "\n";
+            oss << "| " << nodes_expanded << " | " << g.nodes[u].id << " | " << c << " | " << s << " |\n";
+            if (nodes_expanded % debug_node_interval == 0) {
+                // Hardware Sink
+                outfile << oss.str();
+                outfile.flush();
+                oss.str(""); oss.clear();
+            }
         }
 
-        if (u == end) {
-            if (debug_enabled) oss << "- **Target Reached!**\n";
+        if (nodes_expanded > max_nodes) {
+            triggered = true;
+            if (debug_enabled) {
+                oss << "[TERMINATED] **Circuit Breaker Triggered!** | Expanded: " << max_nodes 
+                    << " nodes | Last Node: " << g.nodes[u].id << " (" << get_node_name(g.nodes[u]) << ")"
+                    << " | Best SoC so far: " << s << "kWh.\n";
+            }
             break;
+        }
+        
+        if (u == end) {
+            if (ev.enabled && s < ev.min_arrival_soc_kwh) {
+                if (debug_enabled) {
+                    oss << "[DEBUG] Goal Node " << g.nodes[u].id << " reached but SoC " << s << " < " << ev.min_arrival_soc_kwh << ". Checking for charging options...\n";
+                }
+                // Don't 'continue' here, allow charging state expansion below to potentially satisfy SoC.
+            } else {
+                target_found = true;
+                target_state_idx = curr.state_idx;
+                break;
+            }
+        }
+
+        // --- CHARGING STATE EXPANSION (v2.5.0) ---
+        if (ev.enabled && g.nodes[u].is_charger && g.nodes[u].is_operational) {
+            if (s < ev.target_charge_bound_kwh) {
+                double charge_amount = ev.target_charge_bound_kwh - s;
+                double kw = g.nodes[u].kw_output;
+                if (kw <= 0.0) kw = g.nodes[u].is_emergency_assumption ? 3.0 : 50.0;
+                
+                double charge_time_s = (charge_amount / kw) * 3600.0;
+                double next_cost = c + charge_time_s;
+                double next_soc = ev.target_charge_bound_kwh;
+                int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                
+                bool dominated = false;
+                for (const auto& f : fronts[u]) {
+                    if (f.first >= next_soc_bin && f.second <= next_cost) { 
+                        if (f.first > next_soc_bin || f.second < next_cost) { dominated = true; break; }
+                    }
+                }
+                
+                if (!dominated) {
+                    auto& f_u = fronts[u];
+                    f_u.erase(std::remove_if(f_u.begin(), f_u.end(), [&](const std::pair<int, double>& f){
+                        return f.first <= next_soc_bin && f.second >= next_cost;
+                    }), f_u.end());
+                    f_u.push_back({next_soc_bin, next_cost});
+                    
+                    int next_idx = static_cast<int>(states.size());
+                    states.push_back({u, curr.state_idx, next_cost, next_soc, true});
+                    pq.push({next_cost, next_soc, u, next_idx});
+                }
+            }
         }
 
         for (const auto& edge : g.adjacency_list[u]) {
-            double cost = calculate_edge_cost(edge, obj, hour);
-            if (dist[u] + cost < dist[edge.to]) {
-                dist[edge.to] = dist[u] + cost;
-                prev[edge.to] = u;
-                pq.push({dist[edge.to], edge.to});
+            EdgeCost ec = calculate_edge_costs(u, edge.to, edge, obj, hour, g, ev);
+            double next_c = c + ec.scalar_cost;
+            double next_soc = ev.enabled ? (s - ec.energy_kwh) : 0.0;
+
+            if (ev.enabled && next_soc < ev.min_waypoint_soc_kwh) continue;
+
+            bool next_dominated = false;
+            if (!ev.enabled) {
+                if (next_c >= min_costs[edge.to]) next_dominated = true;
+            } else {
+                int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                for (const auto& f : fronts[edge.to]) {
+                    if (f.first >= next_soc_bin && f.second <= next_c) { next_dominated = true; break; }
+                }
+            }
+
+            if (!next_dominated) {
+                if (!ev.enabled) {
+                    min_costs[edge.to] = next_c;
+                    prev[edge.to] = u;
+                    pq.push({next_c, 0.0, edge.to, -1});
+                } else {
+                    int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                    
+                    // Pruning: remove states made obsolete by the new state
+                    auto& f_to = fronts[edge.to];
+                    f_to.erase(std::remove_if(f_to.begin(), f_to.end(), [&](const std::pair<int, double>& f){
+                        return f.first <= next_soc_bin && f.second >= next_c;
+                    }), f_to.end());
+                    
+                    f_to.push_back({next_soc_bin, next_c});
+                    int next_idx = static_cast<int>(states.size());
+                    states.push_back({edge.to, curr.state_idx, next_c, next_soc});
+                    pq.push({next_c, next_soc, edge.to, next_idx});
+                }
             }
         }
     }
     
-    auto end_time = std::chrono::high_resolution_clock::now();
+    auto end_time = std::chrono::steady_clock::now();
     double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    AlgorithmResult res = reconstruct_path(prev, start, end, "Dijkstra", nodes_expanded, exec_time, obj, hour, g);
+    AlgorithmResult res;
+    if (target_found) {
+        if (ev.enabled) {
+            res = reconstruct_path_from_states(states, target_state_idx, "Dijkstra", nodes_expanded, exec_time, obj, hour, g, ev);
+        } else {
+            res = reconstruct_path(prev, start, end, "Dijkstra", nodes_expanded, exec_time, obj, hour, g, ev);
+        }
+    } else {
+        res.algorithm = "Dijkstra";
+        res.nodes_expanded = nodes_expanded;
+        res.exec_time_ms = exec_time;
+    }
     res.debug_logs = oss.str();
     res.circuit_breaker_triggered = triggered;
     if (triggered) {
-        // --- Failure Signature Protocol ---
         res.nodes_expanded = max_nodes + 1;
-        res.distance_m = 0;
-        res.duration_s = 0;
-        res.path_cost = 0;
         res.path.clear();
     }
     return res;
@@ -611,126 +1115,213 @@ AlgorithmResult run_dijkstra(int start, int end, Objective obj, int hour, const 
  * @param epsilon_min Minimum cost step for iterative limit expansion.
  * @return AlgorithmResult containing the path and stats.
  */
-AlgorithmResult run_iddfs(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, int max_nodes, double epsilon_min) {
-    auto start_time = std::chrono::high_resolution_clock::now();
+AlgorithmResult run_iddfs(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, const std::string& output_dir, int kill_time_ms, int debug_node_interval, int max_nodes, double soc_step, double epsilon_min, const EVParams& ev) {
+    if (ev.enabled) {
+        AlgorithmResult res;
+        res.algorithm = "IDDFS";
+        res.debug_logs = "IDDFS bypassed for EV routing (v2.5.0).";
+        return res;
+    }
+    auto start_time = std::chrono::steady_clock::now();
     std::ostringstream oss;
+    std::ofstream outfile;
+
+    if (debug_enabled && output_dir.empty()) debug_enabled = false;
+
     if (debug_enabled) {
-        oss << "# IDDFS Debug Log (Fringe Resumption + Persistent TT)\n";
-        oss << "- Start: " << start << " (" << g.nodes[start].name << ")\n";
-        oss << "- Target: " << end << " (" << g.nodes[end].name << ")\n\n";
+        outfile.open(output_dir + "/Algo_IDDFS.md");
+        outfile << "# IDDFS Debug Log (EV: " << (ev.enabled ? "ON" : "OFF") << ")\n";
+        outfile << "- Start: " << start << " (" << get_node_name(g.nodes[start]) << ")\n";
+        outfile << "- Target: " << end << " (" << get_node_name(g.nodes[end]) << ")\n\n";
+        outfile << "| Step | Node ID | Cost | SoC |\n|---|---|---|---|\n";
     }
 
-    int nodes_expanded = 0;
+    int total_nodes_expanded = 0;
     bool triggered = false;
     std::vector<int> final_prev(g.nodes.size(), -1);
+    std::vector<SearchState> final_states;
+    int final_target_state_idx = -1;
     
     struct State {
         int u;
         double cost;
+        double soc;
+        int state_idx;
         int edge_idx;
     };
 
-    // Vector-based transposition table (Persistent across iterations)
-    std::vector<double> min_cost_reached(g.nodes.size(), std::numeric_limits<double>::infinity());
+    // (cost, -soc) fronts
+    std::vector<std::vector<std::pair<int, double>>> fronts(g.nodes.size());
+    std::vector<double> min_costs(g.nodes.size(), std::numeric_limits<double>::infinity());
     std::vector<int> best_prev(g.nodes.size(), -1);
 
     double total_dist = haversine(g.nodes[start].lat, g.nodes[start].lng, g.nodes[end].lat, g.nodes[end].lng);
     double epsilon = std::max(total_dist * 0.05, epsilon_min);
-
-    double limit = 0.0;
+    double limit = epsilon;
     bool found = false;
 
-    // Fringe Frontier
-    std::vector<State> now;
-    std::vector<State> later;
-    now.push_back({start, 0.0, 0});
-    min_cost_reached[start] = 0.0;
+    double start_soc = ev.enabled ? ev.start_soc_kwh : 0.0;
 
     while (true) {
-        if (debug_enabled) oss << "### Cost Limit: " << limit << " | Fringe Size: " << now.size() << "\n";
         double next_limit = std::numeric_limits<double>::infinity();
+        std::vector<SearchState> pass_states;
+        if (ev.enabled) {
+            int start_bin = static_cast<int>(std::round(start_soc / soc_step));
+            fronts.assign(g.nodes.size(), {});
+            fronts[start].push_back({start_bin, 0.0});
+            pass_states.push_back({start, -1, 0.0, start_soc});
+        } else {
+            min_costs.assign(g.nodes.size(), std::numeric_limits<double>::infinity());
+            min_costs[start] = 0.0;
+        }
 
-        while (!now.empty()) {
-            State root_state = now.back();
-            now.pop_back();
+        std::stack<State> s;
+        if (ev.enabled) s.push({start, 0.0, start_soc, 0, 0});
+        else s.push({start, 0.0, 0.0, -1, 0});
 
-            if (root_state.cost > min_cost_reached[root_state.u]) continue;
+        while (!s.empty()) {
+            State& curr = s.top();
+            int u = curr.u;
+            double c = curr.cost;
+            double soc = curr.soc;
 
-            std::stack<State> s;
-            s.push(root_state);
+            if (curr.edge_idx == 0) {
+                total_nodes_expanded++;
 
-            while (!s.empty()) {
-                State& curr = s.top();
-                int u = curr.u;
-                double c = curr.cost;
-
-                if (curr.edge_idx == 0) {
-                    nodes_expanded++;
-                    if (nodes_expanded > max_nodes) {
+                // --- NATIVE WATCHDOG (v2.3.1 - Detached from Debugging) ---
+                if (total_nodes_expanded % debug_node_interval == 0) {
+                    auto curr_perf_time = std::chrono::steady_clock::now();
+                    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_perf_time - start_time).count();
+                    if (kill_time_ms > 0 && elapsed_ms > kill_time_ms) {
+                        if (debug_enabled) {
+                            outfile << "| TERMINATED | " << g.nodes[u].id << " | Time Limit Exceeded (" << elapsed_ms << "ms) | - |\n";
+                            outfile.flush();
+                        }
                         triggered = true;
-                        if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
-                        break;
-                    }
-                    if (u == end) {
-                        found = true;
                         break;
                     }
                 }
+                
+                if (debug_enabled) {
+                    oss << "| " << total_nodes_expanded << " | " << g.nodes[u].id << " | " << c << " | " << soc << " |\n";
+                    if (total_nodes_expanded % debug_node_interval == 0) {
+                        // Hardware Sink
+                        outfile << oss.str();
+                        outfile.flush();
+                        oss.str(""); oss.clear();
+                    }
+                }
 
-                if (triggered || found) break;
-
-                if (curr.edge_idx < (int)g.adjacency_list[u].size()) {
-                    const auto& edge = g.adjacency_list[u][curr.edge_idx];
-                    curr.edge_idx++;
-                    
-                    double edge_cost = calculate_edge_cost(edge, obj, hour);
-                    double total_c = c + edge_cost;
-                    
-                    if (total_c <= limit) {
-                        if (total_c < min_cost_reached[edge.to]) {
-                            min_cost_reached[edge.to] = total_c;
-                            best_prev[edge.to] = u;
-                            s.push({edge.to, total_c, 0});
-                        }
-                    } else {
-                        if (total_c < next_limit) next_limit = total_c;
-                        // Avoid adding deep paths that are already exceeded
-                        if (total_c < min_cost_reached[edge.to]) {
-                            min_cost_reached[edge.to] = total_c; // UPDATE TT HERE
-                            best_prev[edge.to] = u;              // UPDATE PREV HERE
-                            later.push_back({edge.to, total_c, 0});
+                if (total_nodes_expanded > max_nodes) {
+                    triggered = true;
+                    if (debug_enabled) {
+                        outfile << "| TERMINATED | " << g.nodes[u].id << " | Circuit Breaker (Nodes) | - |\n";
+                    }
+                    break;
+                }
+                
+                if (u == end) {
+                    if (ev.enabled && soc < ev.min_arrival_soc_kwh) {
+                        if (debug_enabled) {
+                            outfile << "| SEARCHING | " << g.nodes[u].id << " | Found Target (Low SoC) | " << soc << " |\n";
                         }
                     }
-                } else {
-                    s.pop();
+                    else { 
+                        found = true; 
+                        final_target_state_idx = curr.state_idx;
+                        if (debug_enabled) outfile << "| SUCCESS | " << g.nodes[u].id << " | Path Optimized | " << soc << " |\n";
+                        break; 
+                    }
                 }
             }
             if (triggered || found) break;
+
+            if (curr.edge_idx < (int)g.adjacency_list[u].size()) {
+                const auto& edge = g.adjacency_list[u][curr.edge_idx];
+                curr.edge_idx++;
+                
+                EdgeCost ec = calculate_edge_costs(u, edge.to, edge, obj, hour, g, ev);
+                double total_c = c + ec.scalar_cost;
+                double next_soc = ev.enabled ? (soc - ec.energy_kwh) : 0.0;
+
+                if (ev.enabled && next_soc < ev.min_waypoint_soc_kwh) continue;
+
+                if (total_c <= limit) {
+                    bool next_dominated = false;
+                    if (!ev.enabled) {
+                        if (total_c >= min_costs[edge.to]) next_dominated = true;
+                    } else {
+                        int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                        for (const auto& f : fronts[edge.to]) {
+                            if (f.first >= next_soc_bin && f.second <= total_c) { next_dominated = true; break; }
+                        }
+                    }
+                    
+                    if (!next_dominated) {
+                        if (!ev.enabled) {
+                            min_costs[edge.to] = total_c;
+                            best_prev[edge.to] = u;
+                            s.push({edge.to, total_c, 0.0, -1, 0});
+                        } else {
+                            int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                            
+                            // Pruning
+                            auto& f_to = fronts[edge.to];
+                            f_to.erase(std::remove_if(f_to.begin(), f_to.end(), [&](const std::pair<int, double>& f){
+                                return f.first <= next_soc_bin && f.second >= total_c;
+                            }), f_to.end());
+                            
+                            f_to.push_back({next_soc_bin, total_c});
+                            int next_idx = static_cast<int>(pass_states.size());
+                            pass_states.push_back({edge.to, curr.state_idx, total_c, next_soc});
+                            s.push({edge.to, total_c, next_soc, next_idx, 0});
+                        }
+                        
+                        if (debug_enabled) {
+                            oss << "  - Added neighbor: " << g.nodes[edge.to].id << " (" << get_node_name(g.nodes[edge.to]) << ")\n";
+                        }
+                    }
+                } else if (total_c < next_limit) {
+                    next_limit = total_c;
+                }
+            } else { s.pop(); }
         }
 
         if (triggered || found) {
-            if (found) final_prev = best_prev;
+            if (found) {
+                final_prev = best_prev;
+                final_states = pass_states;
+            }
             break;
         }
-        if (next_limit == std::numeric_limits<double>::infinity() && later.empty()) break;
-        
-        // Epsilon Cost-Bucketing
+        if (next_limit == std::numeric_limits<double>::infinity()) break;
         limit = limit + std::max(next_limit - limit, epsilon);
-        now = std::move(later);
-        later.clear();
     }
 
-    auto end_time = std::chrono::high_resolution_clock::now();
+    auto end_time = std::chrono::steady_clock::now();
     double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    AlgorithmResult res = reconstruct_path(final_prev, start, end, "IDDFS", nodes_expanded, exec_time, obj, hour, g);
-    res.debug_logs = oss.str();
+    AlgorithmResult res;
+    if (found) {
+        if (ev.enabled) {
+            res = reconstruct_path_from_states(final_states, final_target_state_idx, "IDDFS", total_nodes_expanded, exec_time, obj, hour, g, ev);
+        } else {
+            res = reconstruct_path(final_prev, start, end, "IDDFS", total_nodes_expanded, exec_time, obj, hour, g, ev);
+        }
+    } else {
+        res.algorithm = "IDDFS";
+        res.nodes_expanded = total_nodes_expanded;
+        res.exec_time_ms = exec_time;
+    }
+
+    res.debug_logs = debug_enabled ? "(TRUNCATED: Native I/O sinked to disk)" : "";
     res.circuit_breaker_triggered = triggered;
+    if (debug_enabled) {
+        outfile << oss.str();
+        outfile.flush();
+        outfile.close();
+    }
     if (triggered) {
-        // --- Failure Signature Protocol ---
         res.nodes_expanded = max_nodes + 1;
-        res.distance_m = 0;
-        res.duration_s = 0;
-        res.path_cost = 0;
         res.path.clear();
     }
     return res;
@@ -750,184 +1341,397 @@ AlgorithmResult run_iddfs(int start, int end, Objective obj, int hour, const Gra
  * @param max_speed Global/conservative max speed for heuristic normalization.
  * @return AlgorithmResult containing the path and stats.
  */
-AlgorithmResult run_astar(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, int max_nodes, double max_speed) {
-    auto start_time = std::chrono::high_resolution_clock::now();
+AlgorithmResult run_astar(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, const std::string& output_dir, int kill_time_ms, int debug_node_interval, int max_nodes, double soc_step, double max_speed, const EVParams& ev) {
+    auto start_time = std::chrono::steady_clock::now();
     std::ostringstream oss;
+    std::ofstream outfile;
+
+    if (debug_enabled && output_dir.empty()) debug_enabled = false;
+
     if (debug_enabled) {
-        oss << "# A* Debug Log\n";
-        oss << "- Start: " << start << " (" << g.nodes[start].name << ")\n";
-        oss << "- Target: " << end << " (" << g.nodes[end].name << ")\n";
-        oss << "- Objective: " << (obj == Objective::SHORTEST ? "Shortest" : "Fastest") << "\n";
-        oss << "- Max Speed for Heuristic: " << max_speed << " km/h\n\n";
+        outfile.open(output_dir + "/Algo_A*.md");
+        outfile << "# A* Debug Log (EV: " << (ev.enabled ? "ON" : "OFF") << ")\n";
+        outfile << "- Start: " << start << " (" << get_node_name(g.nodes[start]) << ")\n";
+        outfile << "- Target: " << end << " (" << get_node_name(g.nodes[end]) << ")\n";
+        outfile << "| Step | Node ID | Cost | SoC |\n|---|---|---|---|\n";
     }
 
-    std::priority_queue<std::pair<double, int>, std::vector<std::pair<double, int>>, std::greater<>> pq;
-    std::vector<double> g_score(g.nodes.size(), std::numeric_limits<double>::infinity());
+    struct Label {
+        double f_score;
+        double g_score;
+        double soc;
+        int u;
+        int state_idx; // Index in the 'states' repository
+        bool operator>(const Label& other) const { return f_score > other.f_score; }
+    };
+
+    std::priority_queue<Label, std::vector<Label>, std::greater<Label>> pq;
+    std::vector<SearchState> states; // Repository for EV path reconstruction
+    std::vector<std::vector<std::pair<int, double>>> fronts(g.nodes.size()); // (soc_bin, g_score)
+    std::vector<double> min_costs(g.nodes.size(), std::numeric_limits<double>::infinity());
     std::vector<int> prev(g.nodes.size(), -1);
     int nodes_expanded = 0;
     bool triggered = false;
+    bool target_found = false;
+    int target_state_idx = -1;
     
-    g_score[start] = 0;
-    double h_start = get_heuristic(start, end, obj, g, max_speed);
-    pq.push({h_start, start});
+    double start_soc = ev.enabled ? ev.start_soc_kwh : 0.0;
+    double h_start = get_heuristic(start, end, obj, g, max_speed, ev);
+    if (ev.enabled) {
+        int start_bin = static_cast<int>(std::round(start_soc / soc_step));
+        states.push_back({start, -1, 0.0, start_soc});
+        pq.push({h_start, 0.0, start_soc, start, 0});
+        fronts[start].push_back({start_bin, 0.0});
+    } else {
+        pq.push({h_start, 0.0, 0.0, start, -1});
+        min_costs[start] = 0.0;
+    }
     
     while (!pq.empty()) {
-        double f_score = pq.top().first;
-        int u = pq.top().second;
-        pq.pop();
+        Label curr = pq.top(); pq.pop();
+        int u = curr.u;
+        double g_u = curr.g_score;
+        double s = curr.soc;
         
-        // Outdated entry check (Dijkstra parity)
-        if (f_score > g_score[u] + get_heuristic(u, end, obj, g, max_speed)) continue;
-
-        nodes_expanded++;
-        if (nodes_expanded > max_nodes) {
-            triggered = true;
-            if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
-            break;
+        if (!ev.enabled) {
+            if (g_u > min_costs[u]) continue;
+        } else {
+            int soc_bin = static_cast<int>(std::round(s / soc_step));
+            bool dominated = false;
+            for (const auto& f : fronts[u]) {
+                if (f.first >= soc_bin && f.second <= g_u) { 
+                    if (f.first > soc_bin || f.second < g_u) { dominated = true; break; }
+                }
+            }
+            if (dominated && u != start) continue;
         }
 
+        nodes_expanded++;
+        
         if (debug_enabled) {
-            oss << "### Step " << nodes_expanded << ": Expanding Node " << u << " (" << g.nodes[u].name << ")\n";
-            oss << "- Current Path Cost: " << std::fixed << std::setprecision(2) << g_score[u] << "\n";
+            oss << "| " << nodes_expanded << " | " << g.nodes[u].id << " | " << g_u << " | " << s << " |\n";
+            if (nodes_expanded % debug_node_interval == 0) {
+                // Watchdog Check
+                auto curr_perf_time = std::chrono::steady_clock::now();
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_perf_time - start_time).count();
+                if (kill_time_ms > 0 && elapsed_ms > kill_time_ms) {
+                    outfile << "| TERMINATED | " << g.nodes[u].id << " | Time Limit Exceeded (" << elapsed_ms << "ms) | - |\n";
+                    triggered = true;
+                    break;
+                }
+                // Hardware Sink
+                outfile << oss.str();
+                outfile.flush();
+                oss.str(""); oss.clear();
+            }
+        }
+
+        if (nodes_expanded > max_nodes) {
+            triggered = true;
+            if (debug_enabled) {
+                oss << "[TERMINATED] **Circuit Breaker Triggered!** | Expanded: " << max_nodes 
+                    << " nodes | Last Node: " << g.nodes[u].id << " (" << get_node_name(g.nodes[u]) << ")"
+                    << " | Best SoC so far: " << s << "kWh.\n";
+            }
+            break;
         }
 
         if (u == end) {
-            if (debug_enabled) oss << "- **Target Reached!**\n";
-            break;
+            if (ev.enabled && s < ev.min_arrival_soc_kwh) {
+                if (debug_enabled) {
+                    oss << "[DEBUG] Goal Node " << g.nodes[u].id << " reached but SoC " << s << " < " << ev.min_arrival_soc_kwh << ". Checking for charging options...\n";
+                }
+                // Don't 'continue' here, allow charging state expansion below to potentially satisfy SoC.
+            } else {
+                target_found = true;
+                target_state_idx = curr.state_idx;
+                break;
+            }
+        }
+
+        // --- CHARGING STATE EXPANSION (v2.5.0) ---
+        if (ev.enabled && g.nodes[u].is_charger && g.nodes[u].is_operational) {
+            if (s < ev.target_charge_bound_kwh) {
+                double charge_amount = ev.target_charge_bound_kwh - s;
+                double kw = g.nodes[u].kw_output;
+                if (kw <= 0.0) kw = g.nodes[u].is_emergency_assumption ? 3.0 : 50.0;
+                
+                double charge_time_s = (charge_amount / kw) * 3600.0;
+                double next_g = g_u + charge_time_s;
+                double next_soc = ev.target_charge_bound_kwh;
+                int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                
+                bool dominated = false;
+                for (const auto& f : fronts[u]) {
+                    if (f.first >= next_soc_bin && f.second <= next_g) { 
+                        if (f.first > next_soc_bin || f.second < next_g) { dominated = true; break; }
+                    }
+                }
+                
+                if (!dominated) {
+                    auto& f_u = fronts[u];
+                    f_u.erase(std::remove_if(f_u.begin(), f_u.end(), [&](const std::pair<int, double>& f){
+                        return f.first <= next_soc_bin && f.second >= next_g;
+                    }), f_u.end());
+                    f_u.push_back({next_soc_bin, next_g});
+                    
+                    double h = get_heuristic(u, end, obj, g, max_speed, ev); 
+                    int next_idx = static_cast<int>(states.size());
+                    states.push_back({u, curr.state_idx, next_g, next_soc, true});
+                    pq.push({next_g + h, next_g, next_soc, u, next_idx});
+                }
+            }
         }
 
         for (const auto& edge : g.adjacency_list[u]) {
-            double cost = calculate_edge_cost(edge, obj, hour);
-            double tentative_g = g_score[u] + cost;
-            if (tentative_g < g_score[edge.to]) {
-                prev[edge.to] = u;
-                g_score[edge.to] = tentative_g;
-                double h_score = get_heuristic(edge.to, end, obj, g, max_speed);
-                pq.push({tentative_g + h_score, edge.to});
+            EdgeCost ec = calculate_edge_costs(u, edge.to, edge, obj, hour, g, ev);
+            double next_g = g_u + ec.scalar_cost;
+            double next_soc = ev.enabled ? (s - ec.energy_kwh) : 0.0;
+
+            if (ev.enabled && next_soc < ev.min_waypoint_soc_kwh) continue;
+
+            bool next_dominated = false;
+            if (!ev.enabled) {
+                if (next_g >= min_costs[edge.to]) next_dominated = true;
+            } else {
+                int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                for (const auto& f : fronts[edge.to]) {
+                    if (f.first >= next_soc_bin && f.second <= next_g) { next_dominated = true; break; }
+                }
+            }
+
+            if (!next_dominated) {
+                double h = get_heuristic(edge.to, end, obj, g, max_speed, ev);
+                if (!ev.enabled) {
+                    min_costs[edge.to] = next_g;
+                    prev[edge.to] = u;
+                    pq.push({next_g + h, next_g, 0.0, edge.to, -1});
+                } else {
+                    int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                    
+                    // Pruning: remove states made obsolete by the new state
+                    auto& f_to = fronts[edge.to];
+                    f_to.erase(std::remove_if(f_to.begin(), f_to.end(), [&](const std::pair<int, double>& f){
+                        return f.first <= next_soc_bin && f.second >= next_g;
+                    }), f_to.end());
+                    
+                    f_to.push_back({next_soc_bin, next_g});
+                    int next_idx = static_cast<int>(states.size());
+                    states.push_back({edge.to, curr.state_idx, next_g, next_soc});
+                    pq.push({next_g + h, next_g, next_soc, edge.to, next_idx});
+                }
+                
+                if (debug_enabled) {
+                    oss << "  - Added neighbor: " << g.nodes[edge.to].id << " (" << get_node_name(g.nodes[edge.to]) << ")\n";
+                }
             }
         }
     }
     
-    auto end_time = std::chrono::high_resolution_clock::now();
-    double exec_time = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    AlgorithmResult res = reconstruct_path(prev, start, end, "A*", nodes_expanded, exec_time, obj, hour, g);
-    res.debug_logs = oss.str();
+    auto end_perf_time = std::chrono::steady_clock::now();
+    double exec_time = std::chrono::duration<double, std::milli>(end_perf_time - start_time).count();
+    AlgorithmResult res;
+    if (target_found) {
+        if (ev.enabled) {
+            res = reconstruct_path_from_states(states, target_state_idx, "A*", nodes_expanded, exec_time, obj, hour, g, ev);
+        } else {
+            res = reconstruct_path(prev, start, end, "A*", nodes_expanded, exec_time, obj, hour, g, ev);
+        }
+    } else {
+        res.algorithm = "A*";
+        res.nodes_expanded = nodes_expanded;
+        res.exec_time_ms = exec_time;
+    }
+    
+    res.debug_logs = debug_enabled ? "(TRUNCATED: Native I/O sinked to disk)" : "";
     res.circuit_breaker_triggered = triggered;
+    if (debug_enabled) {
+        outfile << oss.str();
+        outfile.flush();
+        outfile.close();
+    }
     if (triggered) {
-        // --- Failure Signature Protocol ---
         res.nodes_expanded = max_nodes + 1;
-        res.distance_m = 0;
-        res.duration_s = 0;
-        res.path_cost = 0;
         res.path.clear();
     }
     return res;
 }
 
-AlgorithmResult run_idastar_core(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, int max_nodes, double max_speed, double banding_val, std::ostringstream& oss, int& global_expansion) {
+AlgorithmResult run_idastar_core(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, std::ofstream& outfile, int kill_time_ms, int debug_node_interval, std::chrono::steady_clock::time_point start_perf_time, int max_nodes, double soc_step, double max_speed, double banding_val, std::ostringstream& oss, int& global_expansion, const EVParams& ev) {
     int nodes_expanded = 0;
     bool triggered = false;
     std::vector<int> final_prev(g.nodes.size(), -1);
+    std::vector<SearchState> final_states;
+    int final_target_state_idx = -1;
     
     struct State {
         int u;
         double g_val;
+        double soc;
+        int state_idx;
         int edge_idx;
     };
 
-    // Vector-based transposition table (Persistent across iterations)
-    std::vector<double> min_g_reached(g.nodes.size(), std::numeric_limits<double>::infinity());
+    // (soc_bin, cost) fronts
+    std::vector<std::vector<std::pair<int, double>>> fronts(g.nodes.size());
+    std::vector<double> min_costs(g.nodes.size(), std::numeric_limits<double>::infinity());
     std::vector<int> best_prev(g.nodes.size(), -1);
 
-    double threshold = get_heuristic(start, end, obj, g, max_speed);
+    double threshold = get_heuristic(start, end, obj, g, max_speed, ev);
     bool found = false;
-
-    // Fringe Search: Maintain 'now' and 'later' frontiers
-    std::vector<State> now;
-    std::vector<State> later;
-    now.push_back({start, 0.0, 0});
-    min_g_reached[start] = 0.0;
+    double start_soc = ev.enabled ? ev.start_soc_kwh : 0.0;
 
     while (true) {
-        if (debug_enabled) oss << "### Threshold: " << threshold << " | Fringe Size: " << now.size() << "\n";
-        
         double min_val = std::numeric_limits<double>::infinity();
+        std::vector<SearchState> pass_states;
+        // Root-Restart logic for robust IDA* on cyclic road graphs
+        if (ev.enabled) {
+            int start_bin = static_cast<int>(std::round(start_soc / soc_step));
+            fronts.assign(g.nodes.size(), {});
+            fronts[start].push_back({start_bin, 0.0});
+            pass_states.push_back({start, -1, 0.0, start_soc});
+        } else {
+            min_costs.assign(g.nodes.size(), std::numeric_limits<double>::infinity());
+            min_costs[start] = 0.0;
+        }
 
-        while (!now.empty()) {
-            State root_state = now.back();
-            now.pop_back();
+        std::stack<State> s;
+        if (ev.enabled) s.push({start, 0.0, start_soc, 0, 0});
+        else s.push({start, 0.0, 0.0, -1, 0});
 
-            // TT Pruning for fringe nodes (if reached via better path in CURRENT pass)
-            if (root_state.g_val > min_g_reached[root_state.u]) continue;
+        while (!s.empty()) {
+            State& curr = s.top();
+            int u = curr.u;
+            double g_curr = curr.g_val;
+            double soc_curr = curr.soc;
+            double h = get_heuristic(u, end, obj, g, max_speed, ev);
+            double f = g_curr + h;
 
-            std::stack<State> s;
-            s.push(root_state);
+            if (curr.edge_idx == 0) {
+                global_expansion++;
 
-            while (!s.empty()) {
-                State& curr = s.top();
-                int u = curr.u;
-                double g_curr = curr.g_val;
-                double h = get_heuristic(u, end, obj, g, max_speed);
-                double f = g_curr + h;
-
-                if (curr.edge_idx == 0) {
-                    nodes_expanded++;
-                    global_expansion++;
-                    if (global_expansion > max_nodes) {
-                        triggered = true;
-                        if (debug_enabled) oss << "- **Circuit Breaker Triggered!** (Max nodes: " << max_nodes << ")\n";
-                        break;
-                    }
-                    if (f > threshold) {
-                        if (f < min_val) min_val = f;
-                        // Avoid adding deep paths that are already sub-optimal
-                        if (g_curr <= min_g_reached[u]) {
-                            min_g_reached[u] = g_curr; // Ensure TT reflects best known g for fringe
-                            later.push_back(curr);
+                // --- NATIVE WATCHDOG (v2.3.1 - Detached from Debugging) ---
+                if (global_expansion % debug_node_interval == 0) {
+                    auto curr_perf_time = std::chrono::steady_clock::now();
+                    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(curr_perf_time - start_perf_time).count();
+                    if (kill_time_ms > 0 && elapsed_ms > kill_time_ms) {
+                        if (debug_enabled) {
+                            outfile << "| TERMINATED | " << g.nodes[u].id << " | Time Limit Exceeded (" << elapsed_ms << "ms) | - |\n";
+                            outfile.flush();
                         }
-                        s.pop();
-                        continue;
-                    }
-                    if (u == end) {
-                        found = true;
+                        triggered = true;
                         break;
                     }
                 }
-
-                if (triggered || found) break;
-
-                if (curr.edge_idx < (int)g.adjacency_list[u].size()) {
-                    const auto& edge = g.adjacency_list[u][curr.edge_idx];
-                    curr.edge_idx++;
-                    
-                    int v = edge.to;
-                    double next_g = g_curr + calculate_edge_cost(edge, obj, hour);
-                    
-                    if (next_g < min_g_reached[v]) {
-                        min_g_reached[v] = next_g;
-                        best_prev[v] = u;
-                        s.push({v, next_g, 0});
+                
+                if (debug_enabled) {
+                    oss << "| " << global_expansion << " | " << g.nodes[u].id << " | " << g_curr << " | " << soc_curr << " |\n";
+                    if (global_expansion % debug_node_interval == 0) {
+                        // Hardware Sink
+                        outfile << oss.str();
+                        outfile.flush();
+                        oss.str(""); oss.clear();
                     }
-                } else {
+                }
+
+                if (global_expansion > max_nodes) {
+                    triggered = true;
+                    if (debug_enabled) {
+                        outfile << "| TERMINATED | " << g.nodes[u].id << " | Circuit Breaker (Nodes) | - |\n";
+                    }
+                    break;
+                }
+                
+                if (f > threshold) {
+                    if (f < min_val) min_val = f;
                     s.pop();
+                    continue;
+                }
+
+                if (!ev.enabled) {
+                    if (g_curr > min_costs[u]) { s.pop(); continue; }
+                } else {
+                    int soc_bin = static_cast<int>(std::round(soc_curr / soc_step));
+                    bool dominated = false;
+                    for (const auto& pair : fronts[u]) {
+                        if (pair.first >= soc_bin && pair.second <= g_curr) { 
+                            if (pair.first > soc_bin || pair.second < g_curr) { dominated = true; break; }
+                        }
+                    }
+                    if (dominated && u != start) { s.pop(); continue; }
+                }
+
+                if (u == end) {
+                    if (ev.enabled && soc_curr < ev.min_arrival_soc_kwh) {
+                        if (debug_enabled) {
+                            outfile << "| SEARCHING | " << g.nodes[u].id << " | Found Target (Low SoC) | " << soc_curr << " |\n";
+                        }
+                    }
+                    else { 
+                        found = true; 
+                        final_target_state_idx = curr.state_idx;
+                        if (debug_enabled) outfile << "| SUCCESS | " << g.nodes[u].id << " | Path Optimized | " << soc_curr << " |\n";
+                        break; 
+                    }
                 }
             }
             if (triggered || found) break;
+
+            if (curr.edge_idx < (int)g.adjacency_list[u].size()) {
+                const auto& edge = g.adjacency_list[u][curr.edge_idx];
+                curr.edge_idx++;
+                
+                int v = edge.to;
+                EdgeCost ec = calculate_edge_costs(u, v, edge, obj, hour, g, ev);
+                double next_g = g_curr + ec.scalar_cost;
+                double next_soc = ev.enabled ? (soc_curr - ec.energy_kwh) : 0.0;
+
+                if (ev.enabled && next_soc < ev.min_waypoint_soc_kwh) continue;
+
+                bool next_dominated = false;
+                if (!ev.enabled) {
+                    if (next_g >= min_costs[v]) next_dominated = true;
+                } else {
+                    int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                    for (const auto& pair : fronts[v]) {
+                        if (pair.first >= next_soc_bin && pair.second <= next_g) { next_dominated = true; break; }
+                    }
+                }
+
+                if (!next_dominated) {
+                    if (!ev.enabled) {
+                        min_costs[v] = next_g;
+                        best_prev[v] = u;
+                        s.push({v, next_g, 0.0, -1, 0});
+                    } else {
+                        int next_soc_bin = static_cast<int>(std::round(next_soc / soc_step));
+                        
+                        // Pruning
+                        auto& f_v = fronts[v];
+                        f_v.erase(std::remove_if(f_v.begin(), f_v.end(), [&](const std::pair<int, double>& f){
+                            return f.first <= next_soc_bin && f.second >= next_g;
+                        }), f_v.end());
+                        
+                        f_v.push_back({next_soc_bin, next_g});
+                        int next_idx = static_cast<int>(pass_states.size());
+                        pass_states.push_back({v, curr.state_idx, next_g, next_soc});
+                        s.push({v, next_g, next_soc, next_idx, 0});
+                    }
+                }
+            } else { s.pop(); }
         }
 
         if (triggered || found) {
-            if (found) final_prev = best_prev;
+            if (found) {
+                final_prev = best_prev;
+                final_states = pass_states;
+            }
             break;
         }
-        if (min_val == std::numeric_limits<double>::infinity() && later.empty()) break;
+        if (min_val == std::numeric_limits<double>::infinity()) break;
 
-        // Banding Buffer implementation
-        // Industry-standard Geometric Thresholding
-        // Overshoots min_val by 50% of the discovered increment to skip redundant layers
         double jump = std::max(banding_val, (min_val - threshold) * 1.5);
         threshold = threshold + jump;
-        now = std::move(later);
-        later.clear();
     }
     
     AlgorithmResult res;
@@ -937,29 +1741,41 @@ AlgorithmResult run_idastar_core(int start, int end, Objective obj, int hour, co
     res.path_cost = std::numeric_limits<double>::infinity();
 
     if (found) {
-        res = reconstruct_path(final_prev, start, end, "IDA*", global_expansion, 0, obj, hour, g);
+        if (ev.enabled) {
+            res = reconstruct_path_from_states(final_states, final_target_state_idx, "IDA*", global_expansion, 0, obj, hour, g, ev);
+        } else {
+            res = reconstruct_path(final_prev, start, end, "IDA*", global_expansion, 0, obj, hour, g, ev);
+        }
         res.circuit_breaker_triggered = triggered;
     }
 
     if (triggered) {
-        // --- Failure Signature Protocol ---
         res.nodes_expanded = max_nodes + 1;
-        res.distance_m = 0;
-        res.duration_s = 0;
-        res.path_cost = 0;
         res.path.clear();
         res.algorithm = "IDA*";
     }
     return res;
 }
 
-AlgorithmResult run_idastar(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, int max_nodes, double banding_shortest, double banding_fastest) {
-    auto start_time = std::chrono::high_resolution_clock::now();
+AlgorithmResult run_idastar(int start, int end, Objective obj, int hour, const Graph& g, bool debug_enabled, const std::string& output_dir, int kill_time_ms, int debug_node_interval, int max_nodes, double soc_step, double banding_shortest, double banding_fastest, const EVParams& ev) {
+    if (ev.enabled) {
+        AlgorithmResult res;
+        res.algorithm = "IDA*";
+        res.debug_logs = "IDA* bypassed for EV routing (v2.5.0).";
+        return res;
+    }
+    auto start_time = std::chrono::steady_clock::now();
     std::ostringstream oss;
+    std::ofstream outfile;
+
+    if (debug_enabled && output_dir.empty()) debug_enabled = false;
+
     if (debug_enabled) {
-        oss << "# Hybrid IDA* Debug Log\n";
-        oss << "- Start: " << start << " (" << g.nodes[start].name << ")\n";
-        oss << "- Target: " << end << " (" << g.nodes[end].name << ")\n\n";
+        outfile.open(output_dir + "/Algo_IDA*.md");
+        outfile << "# Hybrid IDA* Debug Log (EV: " << (ev.enabled ? "ON" : "OFF") << ")\n";
+        outfile << "- Start: " << start << " (" << get_node_name(g.nodes[start]) << ")\n";
+        outfile << "- Target: " << end << " (" << get_node_name(g.nodes[end]) << ")\n\n";
+        outfile << "| Step | Node ID | Cost | SoC |\n|---|---|---|---|\n";
     }
 
     double banding_val = (obj == Objective::SHORTEST) ? banding_shortest : banding_fastest;
@@ -968,31 +1784,38 @@ AlgorithmResult run_idastar(int start, int end, Objective obj, int hour, const G
     int global_exp = 0;
     
     // Pass 1: Global Max Speed (Optimistic/Safe)
-    if (debug_enabled) oss << "## Pass 1: Global Max Speed (" << max_speed_global << " kmh)\n";
-    AlgorithmResult res1 = run_idastar_core(start, end, obj, hour, g, debug_enabled, max_nodes, max_speed_global, banding_val, oss, global_exp);
-    if (res1.circuit_breaker_triggered) {
-        res1.algorithm = "IDA*";
-        res1.debug_logs = oss.str();
-        auto current_time = std::chrono::high_resolution_clock::now();
+    AlgorithmResult res1 = run_idastar_core(start, end, obj, hour, g, debug_enabled, outfile, kill_time_ms, debug_node_interval, start_time, max_nodes, soc_step, max_speed_global, banding_val, oss, global_exp, ev);
+    if (res1.circuit_breaker_triggered || res1.path.size() > 0) {
+        auto current_time = std::chrono::steady_clock::now();
         res1.exec_time_ms = std::chrono::duration<double, std::milli>(current_time - start_time).count();
+        res1.debug_logs = debug_enabled ? "(TRUNCATED: Native I/O sinked to disk)" : "";
+        if (debug_enabled) {
+            outfile << oss.str();
+            outfile.flush();
+            outfile.close();
+        }
         return res1;
     }
     
-    // Pass 2: Conservative Max Speed (50% of Global Max for aggressive pruning)
+    // Pass 2: Conservative Max Speed
     double max_speed_conservative = std::max(30.0, max_speed_global * 0.5);
-    if (debug_enabled) oss << "\n## Pass 2: Conservative Max Speed (" << max_speed_conservative << " kmh)\n";
-    AlgorithmResult res2 = run_idastar_core(start, end, obj, hour, g, debug_enabled, max_nodes, max_speed_conservative, banding_val, oss, global_exp);
+    AlgorithmResult res2 = run_idastar_core(start, end, obj, hour, g, debug_enabled, outfile, kill_time_ms, debug_node_interval, start_time, max_nodes, soc_step, max_speed_conservative, banding_val, oss, global_exp, ev);
     
     AlgorithmResult best_res;
     if (res1.path_cost < res2.path_cost) best_res = res1;
     else best_res = res2;
 
-    auto end_time = std::chrono::high_resolution_clock::now();
+    auto end_time = std::chrono::steady_clock::now();
     best_res.exec_time_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    best_res.debug_logs = oss.str();
-    best_res.nodes_expanded = global_exp; // Total expanded across both runs
+    best_res.debug_logs = debug_enabled ? "(TRUNCATED: Native I/O sinked to disk)" : "";
+    best_res.nodes_expanded = global_exp;
     best_res.algorithm = "IDA*";
     
+    if (debug_enabled) {
+        outfile << oss.str();
+        outfile.flush();
+        outfile.close();
+    }
     return best_res;
 }
 
@@ -1017,14 +1840,19 @@ AlgorithmResult run_idastar(int start, int end, Objective obj, int hour, const G
 std::vector<AlgorithmResult> calculate_all_routes(
     double start_lat, double start_lng, double end_lat, double end_lng, 
     int mock_hour, int objective_val, bool algo_debug,
+    const std::string& output_dir,
+    int kill_time_ms,
+    int debug_node_interval,
     const std::string& region_id,
     bool cache_evict,
-    const std::vector<std::tuple<int, double, double, std::string>>& dyn_nodes,
+    const std::vector<std::tuple<int, double, double, std::string, double, double, bool, std::string, double, bool, bool>>& dyn_nodes,
     const std::vector<std::tuple<int, int, double, int, std::string>>& dyn_edges,
     int max_nodes,
+    double soc_discretization_step,
     double banding_shortest,
     double banding_fastest,
-    double epsilon_min
+    double epsilon_min,
+    const EVParams& ev
 ) {
     int cache_max = get_cache_max_size();
 
@@ -1044,16 +1872,18 @@ std::vector<AlgorithmResult> calculate_all_routes(
             s_lru_order.push_front(region_id);
             it->second.second = s_lru_order.begin();
 
-            const Graph& cached_g = it->second.first.graph;
+            std::shared_ptr<const Graph> cached_g_ptr = it->second.first.graph;
             double cached_max_speed = it->second.first.max_speed;
 
-            int start_idx = find_nearest_node(start_lat, start_lng, cached_g);
-            int end_idx = find_nearest_node(end_lat, end_lng, cached_g);
+            // Release lock before starting searches to avoid thread starvation
+            lock.unlock();
+
+            int start_idx = find_nearest_node(start_lat, start_lng, *cached_g_ptr);
+            int end_idx = find_nearest_node(end_lat, end_lng, *cached_g_ptr);
             Objective objective = static_cast<Objective>(objective_val);
 
             // Island Detection Check
-            if (cached_g.nodes[start_idx].component_id != cached_g.nodes[end_idx].component_id) {
-                lock.unlock(); // Release lock before returning
+            if (cached_g_ptr->nodes[start_idx].component_id != cached_g_ptr->nodes[end_idx].component_id) {
                 AlgorithmResult no_route;
                 no_route.distance_m = 0;
                 no_route.duration_s = 0;
@@ -1070,31 +1900,43 @@ std::vector<AlgorithmResult> calculate_all_routes(
                 return results;
             }
 
-            // Launch algorithms using the cached graph
-            // We need to be careful with references.std::async with std::ref(cached_g) is fine
-            // as long as the map entry isn't deleted.Since we only delete on INSERT, 
-            // and this is a search, it's generally safe if we don't have extremely high churn.
-            
-            auto f_bfs = std::async(std::launch::async, run_bfs, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes);
-            auto f_dijkstra = std::async(std::launch::async, run_dijkstra, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes);
-            auto f_iddfs = std::async(std::launch::async, run_iddfs, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes, epsilon_min);
-            auto f_astar = std::async(std::launch::async, run_astar, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes, cached_max_speed);
-            auto f_idastar = std::async(std::launch::async, run_idastar, start_idx, end_idx, objective, mock_hour, std::ref(cached_g), algo_debug, max_nodes, banding_shortest, banding_fastest);
+            // Launch algorithms using lambdas that capture shared_ptr BY VALUE to keep Graph alive.
+            auto launch = [&](auto func, int s, int e, auto... args) {
+                return std::async(std::launch::async, [=, g_ptr = cached_g_ptr] {
+                    return func(s, e, objective, mock_hour, *g_ptr, algo_debug, output_dir, kill_time_ms, debug_node_interval, max_nodes, soc_discretization_step, args...);
+                });
+            };
 
-            auto results = std::vector<AlgorithmResult>{f_bfs.get(), f_dijkstra.get(), f_iddfs.get(), f_astar.get(), f_idastar.get()};
-            lock.unlock(); // Release lock ONLY after all async threads have finished reading cached_g
-            return results;
+            auto f_bfs = launch(run_bfs, start_idx, end_idx, ev);
+            auto f_dijkstra = launch(run_dijkstra, start_idx, end_idx, ev);
+            auto f_iddfs = launch(run_iddfs, start_idx, end_idx, epsilon_min, ev);
+            auto f_astar = launch(run_astar, start_idx, end_idx, cached_max_speed, ev);
+            auto f_idastar = launch(run_idastar, start_idx, end_idx, banding_shortest, banding_fastest, ev);
+
+            return {f_bfs.get(), f_dijkstra.get(), f_iddfs.get(), f_astar.get(), f_idastar.get()};
         }
     }
 
-    // ── SLOW PATH: Graph Build (Cache Miss or No Region ID) ──────────────────
+    // ── SLOW PATH: Graph Build ────────────────────────────────────────────────
     Graph g;
     if (dyn_nodes.empty()) {
         g = get_static_graph();
     } else {
-        // Build dynamic graph
+        // Build dynamic graph with Stage 5 Data
         for (const auto& dn : dyn_nodes) {
-            g.nodes.push_back({std::get<0>(dn), std::get<1>(dn), std::get<2>(dn), std::get<3>(dn)});
+            Node n;
+            n.id = std::get<0>(dn);
+            n.lat = std::get<1>(dn);
+            n.lng = std::get<2>(dn);
+            n.name = std::get<3>(dn);
+            n.elevation = std::get<4>(dn);
+            n.elevation_confidence = std::get<5>(dn);
+            n.is_charger = std::get<6>(dn);
+            n.charger_type = std::get<7>(dn);
+            n.kw_output = std::get<8>(dn);
+            n.is_operational = std::get<9>(dn);
+            n.is_emergency_assumption = std::get<10>(dn);
+            g.nodes.push_back(n);
         }
         g.adjacency_list.resize(g.nodes.size());
         for (const auto& de : dyn_edges) {
@@ -1116,18 +1958,20 @@ std::vector<AlgorithmResult> calculate_all_routes(
     compute_components(g); // Pre-process for Island Detection
     double max_speed = calculate_max_speed(g);
 
+    auto graph_ptr = std::make_shared<Graph>(std::move(g));
+
     // Store in cache if region_id provided
     if (!region_id.empty()) {
         std::lock_guard<std::mutex> lock(s_graph_cache_mutex);
-        cache_insert(region_id, {g, max_speed}, cache_max);
+        cache_insert(region_id, graph_ptr, max_speed, cache_max);
     }
 
-    int start_idx = find_nearest_node(start_lat, start_lng, g);
-    int end_idx = find_nearest_node(end_lat, end_lng, g);
+    int start_idx = find_nearest_node(start_lat, start_lng, *graph_ptr);
+    int end_idx = find_nearest_node(end_lat, end_lng, *graph_ptr);
     Objective objective = static_cast<Objective>(objective_val);
 
     // Island Detection Check
-    if (g.nodes[start_idx].component_id != g.nodes[end_idx].component_id) {
+    if (graph_ptr->nodes[start_idx].component_id != graph_ptr->nodes[end_idx].component_id) {
         AlgorithmResult no_route;
         no_route.distance_m = 0;
         no_route.duration_s = 0;
@@ -1144,20 +1988,27 @@ std::vector<AlgorithmResult> calculate_all_routes(
         return results;
     }
 
-    auto f_bfs = std::async(std::launch::async, run_bfs, start_idx, end_idx, objective, mock_hour, std::ref(g), algo_debug, max_nodes);
-    auto f_dijkstra = std::async(std::launch::async, run_dijkstra, start_idx, end_idx, objective, mock_hour, std::ref(g), algo_debug, max_nodes);
-    auto f_iddfs = std::async(std::launch::async, run_iddfs, start_idx, end_idx, objective, mock_hour, std::ref(g), algo_debug, max_nodes, epsilon_min);
-    auto f_astar = std::async(std::launch::async, run_astar, start_idx, end_idx, objective, mock_hour, std::ref(g), algo_debug, max_nodes, max_speed);
-    auto f_idastar = std::async(std::launch::async, run_idastar, start_idx, end_idx, objective, mock_hour, std::ref(g), algo_debug, max_nodes, banding_shortest, banding_fastest);
+    // Launch algorithms using lambdas that capture shared_ptr BY VALUE to keep Graph alive.
+    auto launch = [&](auto func, int s, int e, auto... args) {
+        return std::async(std::launch::async, [=, g_ptr = graph_ptr] {
+            return func(s, e, objective, mock_hour, *g_ptr, algo_debug, output_dir, kill_time_ms, debug_node_interval, max_nodes, soc_discretization_step, args...);
+        });
+    };
+
+    auto f_bfs = launch(run_bfs, start_idx, end_idx, ev);
+    auto f_dijkstra = launch(run_dijkstra, start_idx, end_idx, ev);
+    auto f_iddfs = launch(run_iddfs, start_idx, end_idx, epsilon_min, ev);
+    auto f_astar = launch(run_astar, start_idx, end_idx, max_speed, ev);
+    auto f_idastar = launch(run_idastar, start_idx, end_idx, banding_shortest, banding_fastest, ev);
 
     return {f_bfs.get(), f_dijkstra.get(), f_iddfs.get(), f_astar.get(), f_idastar.get()};
 }
 
-std::vector<std::pair<double, double>> calculate_dummy_route(double start_lat, double start_lng, double end_lat, double end_lng) {
+std::vector<RoutePoint> calculate_dummy_route(double start_lat, double start_lng, double end_lat, double end_lng) {
     return {
-        {start_lat, start_lng},
-        {start_lat + 0.01, start_lng + 0.01},
-        {end_lat - 0.01, end_lng - 0.01},
-        {end_lat, end_lng}
+        {start_lat, start_lng, 0.0},
+        {start_lat + 0.01, start_lng + 0.01, 0.0},
+        {end_lat - 0.01, end_lng - 0.01, 0.0},
+        {end_lat, end_lng, 0.0}
     };
 }

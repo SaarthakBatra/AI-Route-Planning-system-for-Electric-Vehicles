@@ -59,6 +59,149 @@
                     </div>
                 </div>
 
+                <!-- Stage 5 EV Mission Control Toggle -->
+                <div class="input-group toggle-group">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="ev-routing-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                    <span class="toggle-label">Enable High-Fidelity EV Mission Control</span>
+                </div>
+
+                <!-- EV Parameter Panel (Hidden by default) -->
+                <div id="ev-params-panel" class="ev-params-panel hidden">
+                    <div class="panel-section">
+                        <h3>Vehicle Mission Profile</h3>
+                        
+                        <div class="input-group">
+                            <label for="vehicle-preset">Vehicle Preset</label>
+                            <select id="vehicle-preset" class="custom-select">
+                                <option value="custom">-- Custom Profile --</option>
+                                <option value="tesla_3" selected>Tesla Model 3</option>
+                                <option value="tesla_y">Tesla Model Y</option>
+                                <option value="rivian_r1t">Rivian R1T</option>
+                                <option value="standard_sedan">Standard Sedan</option>
+                            </select>
+                        </div>
+
+                        <div class="input-row">
+                            <div class="input-group">
+                                <label for="start-soc">Start SoC (%)</label>
+                                <input type="number" id="start-soc" value="80" min="0" max="100">
+                            </div>
+                            <div class="input-group">
+                                <label for="battery-soh">Battery Health (SoH %)</label>
+                                <input type="number" id="battery-soh" value="100" min="0" max="100">
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="payload-slider">
+                                Payload Weight: <span id="payload-display">0</span> kg
+                            </label>
+                            <input type="range" id="payload-slider" min="0" max="2000" value="0" class="custom-slider">
+                        </div>
+
+                        <div class="input-row">
+                            <div class="input-group">
+                                <label for="ambient-temp">Ambient Temp (°C)</label>
+                                <input type="number" id="ambient-temp" value="25">
+                            </div>
+                            <div class="input-group">
+                                <label for="target-charge">Target Charge (%)</label>
+                                <input type="number" id="target-charge" value="80" min="0" max="100">
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="eco-slider">
+                                Mission Priority: <span id="eco-display">Balanced</span>
+                            </label>
+                            <input type="range" id="eco-slider" min="0" max="100" value="50" class="custom-slider">
+                        </div>
+                    </div>
+
+                    <!-- Advanced Physics (Collapsible) -->
+                    <details class="advanced-collapsible">
+                        <summary>Advanced Physics & Safety</summary>
+                        <div class="collapsible-content">
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label for="drag-coeff">Drag Coeff (Cd)</label>
+                                    <input type="number" id="drag-coeff" step="0.01" value="0.23">
+                                </div>
+                                <div class="input-group">
+                                    <label for="frontal-area">Frontal Area (m²)</label>
+                                    <input type="number" id="frontal-area" step="0.01" value="2.22">
+                                </div>
+                            </div>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label for="crr-coeff">Rolling Resistance (Crr)</label>
+                                    <input type="number" id="crr-coeff" step="0.001" value="0.012">
+                                </div>
+                                <div class="input-group">
+                                    <label for="wheel-radius">Wheel Radius (m)</label>
+                                    <input type="number" id="wheel-radius" step="0.01" value="0.35">
+                                </div>
+                            </div>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label for="min-waypoint-soc">Min Waypoint SoC (%)</label>
+                                    <input type="number" id="min-waypoint-soc" value="10" min="0" max="100">
+                                </div>
+                                <div class="input-group">
+                                    <label for="min-arrival-soc">Min Arrival SoC (%)</label>
+                                    <input type="number" id="min-arrival-soc" value="20" min="0" max="100">
+                                </div>
+                            </div>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label for="regen-efficiency">Regen Efficiency (%)</label>
+                                    <input type="number" id="regen-efficiency" value="75" min="0" max="100">
+                                </div>
+                                <div class="input-group">
+                                    <label for="aux-power">Aux Power (kW)</label>
+                                    <input type="number" id="aux-power" step="0.1" value="0.5">
+                                </div>
+                            </div>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label for="mission-charge-bound">Mission Charge Bound (kWh)</label>
+                                    <input type="number" id="mission-charge-bound" step="0.5" value="0" min="0">
+                                </div>
+                                <div class="input-group toggle-group" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); margin: 0; padding: 8px;">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="emergency-mode">
+                                        <span class="slider round"></span>
+                                    </label>
+                                    <span class="toggle-label" style="color: #ef4444; font-size: 0.75rem;">Emergency Mode</span>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+
+                <!-- Trip Execution Panel (Hidden until route calculated) -->
+                <div id="trip-execution-panel" class="trip-execution-panel hidden glass-panel">
+                    <h3>Trip Execution Mode</h3>
+                    <div id="waypoint-logger" class="waypoint-logger">
+                        <p class="logger-instruction">Select waypoint on map to log actual SoC.</p>
+                        <div id="logger-inputs" class="logger-inputs hidden">
+                            <label for="actual-soc-input">Actual SoC at Waypoint:</label>
+                            <div class="input-with-action">
+                                <input type="number" id="actual-soc-input" placeholder="%" min="0" max="100">
+                                <button type="button" id="log-soc-btn" class="mini-btn">Log</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="deviation-readout" class="deviation-readout hidden">
+                        <span class="label">SoC Deviation:</span>
+                        <span id="deviation-value" class="value">0%</span>
+                        <button type="button" id="recompute-btn" class="recompute-btn hidden">Conservative Recompute</button>
+                    </div>
+                </div>
+
                 <div id="status-message" class="status-msg hidden"></div>
 
                 <div id="route-info" class="route-info-panel hidden">

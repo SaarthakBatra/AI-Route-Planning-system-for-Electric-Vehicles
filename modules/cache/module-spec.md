@@ -20,7 +20,8 @@
 ### Architecture & Stack
 - **Runtime**: Node.js (v18+)
 - **Client**: `ioredis` (v5+).
-- **Configuration**: Module-level `.env` required.
+- **Core Dependencies**: `modules/database` (for OCM persistence and spatial tiling).
+- **Configuration**: Module-level `.env` required (contains `OCM_API_KEY`). Persistence configuration (`MONGO_URI`) is inherited from the orchestration layer or `modules/database` to prevent connection conflicts.
 
 ### Directory Structure
 - `index.js`: Diagnostic entry point for module health.
@@ -47,6 +48,9 @@
 ### Quality Standards
 - 100% ESLint compliance (Single Quotes, 4-space indent).
 - Mandatory JSDoc for all exported functions.
+- **Zero-Mongoose Policy**: No direct MongoDB connections or Mongoose models are allowed in this module. All persistent storage must be delegated to the `database` module via its service layer.
+- **Synchronous Ingestion Protocol**: Guarantees high-fidelity maps on the very first request for a new region. Concurrent fetchers for *missing* data must poll and wait (500ms intervals, max 10s wait) for the primary worker to populate the database. Concurrent fetchers for *stale* data must return old results immediately to maintain non-blocking performance.
+- **Environment Safety**: This module must *never* define its own `MONGO_URI` in `.env` to prevent overriding global Atlas connection strings during orchestration.
 - Synchronized log synchronization with the global `Output/` directory via the request context.
 ### 5. The War Room (Bugs Faced & Solved)
 

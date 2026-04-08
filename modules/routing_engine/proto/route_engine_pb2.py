@@ -24,29 +24,33 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12route_engine.proto\x12\x0croute_engine\"&\n\nCoordinate\x12\x0b\n\x03lat\x18\x01 \x01(\x01\x12\x0b\n\x03lng\x18\x02 \x01(\x01\"?\n\tNodeProto\x12\n\n\x02id\x18\x01 \x01(\x05\x12\x0b\n\x03lat\x18\x02 \x01(\x01\x12\x0b\n\x03lng\x18\x03 \x01(\x01\x12\x0c\n\x04name\x18\x04 \x01(\t\"Y\n\tEdgeProto\x12\t\n\x01u\x18\x01 \x01(\x05\x12\t\n\x01v\x18\x02 \x01(\x05\x12\x10\n\x08weight_m\x18\x03 \x01(\x01\x12\x11\n\tspeed_kmh\x18\x04 \x01(\x05\x12\x11\n\troad_type\x18\x05 \x01(\t\"\\\n\nMapPayload\x12&\n\x05nodes\x18\x01 \x03(\x0b\x32\x17.route_engine.NodeProto\x12&\n\x05\x65\x64ges\x18\x02 \x03(\x0b\x32\x17.route_engine.EdgeProto\"\xd7\x01\n\x0cRouteRequest\x12\'\n\x05start\x18\x01 \x01(\x0b\x32\x18.route_engine.Coordinate\x12%\n\x03\x65nd\x18\x02 \x01(\x0b\x32\x18.route_engine.Coordinate\x12\x11\n\tmock_hour\x18\x03 \x01(\x05\x12*\n\tobjective\x18\x04 \x01(\x0e\x32\x17.route_engine.Objective\x12\x10\n\x08map_data\x18\x05 \x01(\t\x12\x11\n\tregion_id\x18\x06 \x01(\t\x12\x13\n\x0bmap_data_pb\x18\x07 \x01(\x0c\"\xec\x01\n\x0f\x41lgorithmResult\x12\x11\n\talgorithm\x18\x01 \x01(\t\x12*\n\x08polyline\x18\x02 \x03(\x0b\x32\x18.route_engine.Coordinate\x12\x10\n\x08\x64istance\x18\x03 \x01(\x01\x12\x10\n\x08\x64uration\x18\x04 \x01(\x01\x12\x16\n\x0enodes_expanded\x18\x05 \x01(\x05\x12\x14\n\x0c\x65xec_time_ms\x18\x06 \x01(\x01\x12\x11\n\tpath_cost\x18\x07 \x01(\x01\x12\x12\n\ndebug_logs\x18\x08 \x01(\t\x12!\n\x19\x63ircuit_breaker_triggered\x18\t \x01(\x08\"?\n\rRouteResponse\x12.\n\x07results\x18\x01 \x03(\x0b\x32\x1d.route_engine.AlgorithmResult*&\n\tObjective\x12\x0b\n\x07\x46\x41STEST\x10\x00\x12\x0c\n\x08SHORTEST\x10\x01\x32[\n\x0cRouteService\x12K\n\x0e\x43\x61lculateRoute\x12\x1a.route_engine.RouteRequest\x1a\x1b.route_engine.RouteResponse\"\x00\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12route_engine.proto\x12\x0croute_engine\"^\n\nCoordinate\x12\x0b\n\x03lat\x18\x01 \x01(\x01\x12\x0b\n\x03lng\x18\x02 \x01(\x01\x12\x1c\n\x14segment_consumed_kwh\x18\x03 \x01(\x01\x12\x18\n\x10is_charging_stop\x18\x04 \x01(\x08\"\x97\x02\n\tNodeProto\x12\n\n\x02id\x18\x01 \x01(\x05\x12\x0b\n\x03lat\x18\x02 \x01(\x01\x12\x0b\n\x03lng\x18\x03 \x01(\x01\x12\x0c\n\x04name\x18\x04 \x01(\t\x12\x11\n\televation\x18\x05 \x01(\x01\x12\x1c\n\x14\x65levation_confidence\x18\x06 \x01(\x01\x12\x12\n\nis_charger\x18\x07 \x01(\x08\x12\x14\n\x0c\x63harger_type\x18\x08 \x01(\t\x12\x11\n\tkw_output\x18\t \x01(\x01\x12\x16\n\x0eis_operational\x18\n \x01(\x08\x12/\n\x0f\x61vailable_ports\x18\x0b \x03(\x0e\x32\x16.route_engine.PortType\x12\x1f\n\x17is_emergency_assumption\x18\x0c \x01(\x08\"Y\n\tEdgeProto\x12\t\n\x01u\x18\x01 \x01(\x05\x12\t\n\x01v\x18\x02 \x01(\x05\x12\x10\n\x08weight_m\x18\x03 \x01(\x01\x12\x11\n\tspeed_kmh\x18\x04 \x01(\x05\x12\x11\n\troad_type\x18\x05 \x01(\t\"\\\n\nMapPayload\x12&\n\x05nodes\x18\x01 \x03(\x0b\x32\x17.route_engine.NodeProto\x12&\n\x05\x65\x64ges\x18\x02 \x03(\x0b\x32\x17.route_engine.EdgeProto\"\xad\x03\n\x08\x45VParams\x12\x19\n\x11\x65\x66\x66\x65\x63tive_mass_kg\x18\x01 \x01(\x01\x12\x0b\n\x03\x43rr\x18\x02 \x01(\x01\x12\x16\n\x0ewheel_radius_m\x18\x03 \x01(\x01\x12\x11\n\tac_kw_max\x18\x04 \x01(\x01\x12\x11\n\tdc_kw_max\x18\x05 \x01(\x01\x12\x1a\n\x12max_regen_power_kw\x18\x06 \x01(\x01\x12%\n\x1d\x65nergy_uncertainty_margin_pct\x18\x07 \x01(\x01\x12\x17\n\x0f\x62\x61ttery_soh_pct\x18\x08 \x01(\x01\x12\x15\n\rstart_soc_kwh\x18\t \x01(\x01\x12\x1c\n\x14min_waypoint_soc_kwh\x18\n \x01(\x01\x12\x1b\n\x13min_arrival_soc_kwh\x18\x0b \x01(\x01\x12\x1f\n\x17target_charge_bound_kwh\x18\x0c \x01(\x01\x12\x0f\n\x07\x65nabled\x18\r \x01(\x08\x12\x12\n\ndrag_coeff\x18\x0e \x01(\x01\x12\x17\n\x0f\x66rontal_area_m2\x18\x0f \x01(\x01\x12\x18\n\x10regen_efficiency\x18\x10 \x01(\x01\x12\x14\n\x0c\x61ux_power_kw\x18\x11 \x01(\x01\"\x82\x02\n\x0cRouteRequest\x12\'\n\x05start\x18\x01 \x01(\x0b\x32\x18.route_engine.Coordinate\x12%\n\x03\x65nd\x18\x02 \x01(\x0b\x32\x18.route_engine.Coordinate\x12\x11\n\tmock_hour\x18\x03 \x01(\x05\x12*\n\tobjective\x18\x04 \x01(\x0e\x32\x17.route_engine.Objective\x12\x10\n\x08map_data\x18\x05 \x01(\t\x12\x11\n\tregion_id\x18\x06 \x01(\t\x12\x13\n\x0bmap_data_pb\x18\x07 \x01(\x0c\x12)\n\tev_params\x18\x08 \x01(\x0b\x32\x16.route_engine.EVParams\"\xb5\x02\n\x0f\x41lgorithmResult\x12\x11\n\talgorithm\x18\x01 \x01(\t\x12*\n\x08polyline\x18\x02 \x03(\x0b\x32\x18.route_engine.Coordinate\x12\x10\n\x08\x64istance\x18\x03 \x01(\x01\x12\x10\n\x08\x64uration\x18\x04 \x01(\x01\x12\x16\n\x0enodes_expanded\x18\x05 \x01(\x05\x12\x14\n\x0c\x65xec_time_ms\x18\x06 \x01(\x01\x12\x11\n\tpath_cost\x18\x07 \x01(\x01\x12\x12\n\ndebug_logs\x18\x08 \x01(\t\x12!\n\x19\x63ircuit_breaker_triggered\x18\t \x01(\x08\x12\x17\n\x0f\x61rrival_soc_kwh\x18\n \x01(\x01\x12\x14\n\x0c\x63onsumed_kwh\x18\x0b \x01(\x01\x12\x18\n\x10is_charging_stop\x18\x0c \x01(\x08\"?\n\rRouteResponse\x12.\n\x07results\x18\x01 \x03(\x0b\x32\x1d.route_engine.AlgorithmResult*&\n\tObjective\x12\x0b\n\x07\x46\x41STEST\x10\x00\x12\x0c\n\x08SHORTEST\x10\x01*z\n\x08PortType\x12\x10\n\x0cUNKNOWN_PORT\x10\x00\x12\x10\n\x0cIEC_62196_T2\x10\x01\x12\x0b\n\x07\x43HADEMO\x10\x02\x12\x08\n\x04\x43\x43S1\x10\x03\x12\x08\n\x04\x43\x43S2\x10\x04\x12\x0b\n\x07TESLA_S\x10\x05\x12\r\n\tBHARAT_DC\x10\x06\x12\r\n\tWALL_PLUG\x10\x07\x32[\n\x0cRouteService\x12K\n\x0e\x43\x61lculateRoute\x12\x1a.route_engine.RouteRequest\x1a\x1b.route_engine.RouteResponse\"\x00\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'route_engine_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_OBJECTIVE']._serialized_start=848
-  _globals['_OBJECTIVE']._serialized_end=886
+  _globals['_OBJECTIVE']._serialized_start=1669
+  _globals['_OBJECTIVE']._serialized_end=1707
+  _globals['_PORTTYPE']._serialized_start=1709
+  _globals['_PORTTYPE']._serialized_end=1831
   _globals['_COORDINATE']._serialized_start=36
-  _globals['_COORDINATE']._serialized_end=74
-  _globals['_NODEPROTO']._serialized_start=76
-  _globals['_NODEPROTO']._serialized_end=139
-  _globals['_EDGEPROTO']._serialized_start=141
-  _globals['_EDGEPROTO']._serialized_end=230
-  _globals['_MAPPAYLOAD']._serialized_start=232
-  _globals['_MAPPAYLOAD']._serialized_end=324
-  _globals['_ROUTEREQUEST']._serialized_start=327
-  _globals['_ROUTEREQUEST']._serialized_end=542
-  _globals['_ALGORITHMRESULT']._serialized_start=545
-  _globals['_ALGORITHMRESULT']._serialized_end=781
-  _globals['_ROUTERESPONSE']._serialized_start=783
-  _globals['_ROUTERESPONSE']._serialized_end=846
-  _globals['_ROUTESERVICE']._serialized_start=888
-  _globals['_ROUTESERVICE']._serialized_end=979
+  _globals['_COORDINATE']._serialized_end=130
+  _globals['_NODEPROTO']._serialized_start=133
+  _globals['_NODEPROTO']._serialized_end=412
+  _globals['_EDGEPROTO']._serialized_start=414
+  _globals['_EDGEPROTO']._serialized_end=503
+  _globals['_MAPPAYLOAD']._serialized_start=505
+  _globals['_MAPPAYLOAD']._serialized_end=597
+  _globals['_EVPARAMS']._serialized_start=600
+  _globals['_EVPARAMS']._serialized_end=1029
+  _globals['_ROUTEREQUEST']._serialized_start=1032
+  _globals['_ROUTEREQUEST']._serialized_end=1290
+  _globals['_ALGORITHMRESULT']._serialized_start=1293
+  _globals['_ALGORITHMRESULT']._serialized_end=1602
+  _globals['_ROUTERESPONSE']._serialized_start=1604
+  _globals['_ROUTERESPONSE']._serialized_end=1667
+  _globals['_ROUTESERVICE']._serialized_start=1833
+  _globals['_ROUTESERVICE']._serialized_end=1924
 # @@protoc_insertion_point(module_scope)

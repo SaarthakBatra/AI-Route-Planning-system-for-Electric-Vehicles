@@ -89,10 +89,37 @@ npm test
 npm run lint
 ```
 
-## 7. MongoDB Atlas Quick Setup
+## 8. OCM Spatial Tiling (Stage 5)
+
+Implemented a fixed-size spatial tiling system (0.5° cells) for persistent OCM data storage.
+
+### 8.1 Tile Key Logic
+Uses `Math.floor(coord / 0.5) * 0.5` to ensure stable string keys (e.g., `tile:28.0_75.5`).
+
+### 8.2 Models & Indices
+- **OcmTile**: Metadata for tracking fetch status and staleness.
+- **OcmCharger**: Detailed charger telemetry with a `2dsphere` GeoJSON index for high-fidelity spatial lookups.
+
+### 8.3 Service Contracts
+- `getTileMetadata(tile_key)`: Retrieves tile lifecycle information.
+- `upsertTileChargers(tile_key, chargers, tileBbox)`: Atomic `bulkWrite` for chargers and metadata updates.
+- `acquireTileFetchLock(tile_key)`: Atomic lock to prevent concurrent fetch operations.
+
+## 9. MongoDB Atlas Quick Setup
 1. Create a free account at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas).
 2. Create an **M0 cluster**.
 3. Add a database user (Read/Write).
 4. Whitelist `0.0.0.0/0` (for development).
 5. Copy the connection string and paste it into your `.env` file.
+
+## 10. Self-Healing Protocol (Lock Expiry)
+
+To prevent geographic tiles from being permanently locked in a `fetching` state due to worker crashes, the module implements a **Self-Healing Lock Protocol**:
+
+1. **5-Minute TTL**: Locks (`fetching` status) automatically expire after 300,000ms.
+2. **Atomic Recovery**: `acquireTileFetchLock` uses an `$or` query to re-acquire expired locks safely.
+3. **Success Convergence**: Every data write (`upsertTileChargers`) forcibly resets the status to `idle`.
+4. **Failure Recovery**: Exceptions during ingestion trigger a `failed` status reset to enable immediate retries.
+
+This ensures high availability for spatial data updates even in unstable distributed environments.
 

@@ -5,6 +5,9 @@ const protobuf = require('protobufjs');
 const { client } = require('./redisClient');
 const logger = require('../utils/logger');
 const { calculateHaversine } = require('../utils/haversine');
+const { getElevation } = require('./elevationService');
+const { getOCMChargers } = require('./ocmWorker');
+const { mapPorts } = require('../utils/portMapper');
 
 /**
  * @fileoverview OSM API Worker for dynamic map ingestion, Protobuf conversion, and caching.
@@ -77,27 +80,24 @@ const getRegionId = (bbox) => {
  * Converts OSM JSON elements into a binary MapPayload Protobuf.
  * Maps OSM IDs to sequential internal int32 IDs as required by the proto.
  * 
- * Workflow:
- *  1. Filters and maps nodes to sequential internal IDs.
- *  2. Extracts names from node tags or way tags (inheritance).
- *  3. Calculates Haversine distances for edge weights.
- *  4. Maps highway tags to speed limits from HIGHWAY_SPEEDS.
- *  5. Verifies and encodes the final Protobuf buffer.
+ * Stage 5 Enhancements:
+ *  - Bilinear SRTM interpolation for every node.
+ *  - Native OSM and OCM-source charging POI injection.
+ *  - MAX_FLOAT fail-safe for topological breaks.
  *
  * @param {Object} osmData - Raw JSON from Overpass API.
+ * @param {Object} bbox - Bounding box.
+ * @param {string} regionId - Local region key.
  * @returns {Promise<Buffer>} Binary serialized MapPayload.
  */
-const convertToMapPayload = async (osmData) => {
+const convertToMapPayload = async (osmData, bbox, regionId) => {
     const root = await protobuf.load(PROTO_PATH);
     const MapPayload = root.lookupType('route_engine.MapPayload');
     const EdgeProto = root.lookupType('route_engine.EdgeProto');
     const NodeProto = root.lookupType('route_engine.NodeProto');
     
-    // Standardized Empty Response: Return a valid empty payload if no elements exist
-    if (!osmData || !osmData.elements || osmData.elements.length === 0) {
-        const emptyPayload = MapPayload.create({ nodes: [], edges: [] });
-        return MapPayload.encode(emptyPayload).finish();
-    }
+    // 0. Fetch OCM Chargers for merging
+    const ocmChargers = await getOCMChargers(bbox, regionId);
 
     const nodesById = new Map();
     const osmToInternal = new Map();
@@ -105,25 +105,58 @@ const convertToMapPayload = async (osmData) => {
     const edgesProto = [];
     let internalIdCounter = 0;
 
-    // 1. Process Nodes
-    osmData.elements.forEach(el => {
+    // 1. Process OSM Nodes
+    for (const el of osmData.elements || []) {
         if (el.type === 'node') {
             const internalId = internalIdCounter++;
+            const { elevation, confidence } = await getElevation(el.lat, el.lon);
             
-            // Priority: name > name:en > int_name > alt_name
-            const rawName = el.tags?.name || el.tags?.['name:en'] || el.tags?.int_name || el.tags?.alt_name || '';
+            const rawName = el.tags?.name || el.tags?.['name:en'] || el.tags?.int_name || '';
+
+            // POI Ingestion (OSM Native)
+            const isCharger = el.tags?.amenity === 'charging_station';
+            const isEmergency = el.tags?.amenity === 'fuel' || el.tags?.amenity === 'restaurant';
             
             const node = NodeProto.create({
                 id: internalId,
                 lat: el.lat,
                 lng: el.lon,
-                name: rawName
+                name: rawName,
+                elevation: elevation,
+                elevationConfidence: confidence,
+                isCharger: isCharger || isEmergency,
+                chargerType: isEmergency ? 'EMERGENCY' : (el.tags?.['socket:type2'] ? 'IEC_62196_T2' : 'CANONICAL'),
+                kwOutput: isEmergency ? 3.0 : (parseFloat(el.tags?.max_power) || 0),
+                isOperational: el.tags?.operational_status !== 'closed',
+                isEmergencyAssumption: isEmergency
             });
             osmToInternal.set(el.id, internalId);
             nodesById.set(el.id, node);
             nodesProto.push(node);
         }
-    });
+    }
+
+    // 1.1 Process OCM Chargers (Injection)
+    for (const charger of ocmChargers) {
+        const internalId = internalIdCounter++;
+        const { elevation, confidence } = await getElevation(charger.location.coordinates[1], charger.location.coordinates[0]);
+        
+        const node = NodeProto.create({
+            id: internalId,
+            lat: charger.location.coordinates[1],
+            lng: charger.location.coordinates[0],
+            name: charger.name,
+            elevation: elevation,
+            elevationConfidence: confidence,
+            isCharger: true,
+            chargerType: 'OCM_SOURCE',
+            kwOutput: charger.kw_output,
+            isOperational: charger.is_operational,
+            availablePorts: charger.available_ports.map(p => root.lookupEnum('route_engine.PortType').values[p] || 0),
+            isEmergencyAssumption: false
+        });
+        nodesProto.push(node);
+    }
 
     /**
      * Helper to validate node coordinates before distance calculation.
@@ -162,8 +195,8 @@ const convertToMapPayload = async (osmData) => {
                 const v = nodesById.get(vId);
 
                 if (u && v) {
-                    let weight_m = 1.0; 
-                    
+                    let weight_m = 3.402823e+38; // Default to MAX_FLOAT (32-bit float limit)
+
                     if (isValidCoord(u) && isValidCoord(v)) {
                         const dist = calculateHaversine(u.lat, u.lng, v.lat, v.lng);
                         if (Number.isFinite(dist) && dist > 0) {
@@ -308,8 +341,8 @@ const getMapData = async (bbox) => {
  */
 const fetchMapData = async (bbox) => {
     const { minLat, minLon, maxLat, maxLon } = bbox;
-    // Added [timeout:25] server hint for Overpass processing
-    const query = `[out:json][timeout:25];(way["highway"](${minLat},${minLon},${maxLat},${maxLon}););out body;>;out qt;`;
+    // Expanded for Stage 5: Include nodes with amenity=charging_station or fuel or restaurant
+    const query = `[out:json][timeout:25];(way["highway"](${minLat},${minLon},${maxLat},${maxLon});node["amenity"~"charging_station|fuel|restaurant"](${minLat},${minLon},${maxLat},${maxLon}););out body;>;out qt;`;
     const url = 'https://overpass-api.de/api/interpreter';
     
     let lastError;
@@ -389,7 +422,7 @@ const getMapPayload = async (bbox) => {
     try {
         const binary = await withCacheAside(key, async () => {
             const osmJson = await fetchMapData(bbox);
-            return await convertToMapPayload(osmJson);
+            return await convertToMapPayload(osmJson, bbox, regionId);
         }, true, 'getMapPayload');
 
         logger.done('getMapPayload', `SUCCESS length: ${binary.length}B`);

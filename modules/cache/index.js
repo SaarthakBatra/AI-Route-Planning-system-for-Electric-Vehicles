@@ -17,6 +17,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { client, pingRedis } = require('./services/redisClient');
 const { getMapPayload } = require('./services/osmWorker');
+const database = require('../database');
 const logger = require('./utils/logger');
 
 /**
@@ -41,6 +42,9 @@ const runHealthCheck = async () => {
         logger.info('Cache Module — OSM Worker Health Check');
         logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         
+        // Connect to MongoDB Atlas for OCM triage logic
+        await database.connectMongo();
+
         // London tiny sample bbox
         const dummyBbox = { minLat: 51.500, minLon: -0.100, maxLat: 51.501, maxLon: -0.099 };
         const { binary, region_id } = await getMapPayload(dummyBbox);
@@ -60,6 +64,14 @@ const runHealthCheck = async () => {
             logger.info('Disconnecting Redis client in finally block...');
             await client.quit();
             logger.info('Redis disconnected.');
+        }
+
+        // Ensure MongoDB is disconnected to prevent process hanging
+        try {
+            await database.disconnectMongo();
+            logger.info('MongoDB disconnected.');
+        } catch (err) {
+            // Silently fail if already disconnected
         }
     }
 };

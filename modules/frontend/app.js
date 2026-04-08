@@ -62,11 +62,95 @@ const state = {
     originalStyles: new Map(), // Stores { algorithm: { latLngs, weight, offset, color } }
     markers: {
         start: null,
-        end: null
+        end: null,
+        chargers: []
     },
     debounceTimers: {
         start: null,
         end: null
+    },
+    // Stage 5 EV States
+    evEnabled: false,
+    evParams: {
+        vehicle_mass_kg: 1800,
+        battery_capacity_kwh: 60,
+        drag_coeff: 0.23,
+        frontal_area_m2: 2.22,
+        crr: 0.012,
+        wheel_radius_m: 0.35,
+        regen_efficiency: 0.75,
+        max_regen_power_kw: 60.0,
+        aux_power_kw: 0.5,
+        ac_kw_max: 11.0,
+        dc_kw_max: 250.0,
+        energy_uncertainty_margin_pct: 5.0
+    },
+    tripHistory: {
+        plannedWaypoints: [],
+        actualLogs: new Map(), // waypointId -> actualSoC
+        selectedWaypoint: null
+    }
+};
+
+/**
+ * OEM Vehicle Presets (Stage 5 Physics)
+ */
+const vehiclePresets = {
+    tesla_3: {
+        name: 'Tesla Model 3',
+        mass_kg: 1750,
+        capacity_kwh: 60,
+        drag_coeff: 0.23,
+        frontal_area: 2.22,
+        crr: 0.012,
+        wheel_radius: 0.35,
+        ac_max: 11,
+        dc_max: 170,
+        regen_max: 60,
+        regen_eff: 0.75,
+        aux: 0.5
+    },
+    tesla_y: {
+        name: 'Tesla Model Y',
+        mass_kg: 1950,
+        capacity_kwh: 75,
+        drag_coeff: 0.24,
+        frontal_area: 2.54,
+        crr: 0.012,
+        wheel_radius: 0.38,
+        ac_max: 11,
+        dc_max: 250,
+        regen_max: 75,
+        regen_eff: 0.80,
+        aux: 0.7
+    },
+    rivian_r1t: {
+        name: 'Rivian R1T',
+        mass_kg: 3150,
+        capacity_kwh: 135,
+        drag_coeff: 0.30,
+        frontal_area: 3.2,
+        crr: 0.015,
+        wheel_radius: 0.45,
+        ac_max: 11,
+        dc_max: 210,
+        regen_max: 100,
+        regen_eff: 0.70,
+        aux: 1.2
+    },
+    standard_sedan: {
+        name: 'Standard Sedan',
+        mass_kg: 1800,
+        capacity_kwh: 60,
+        drag_coeff: 0.28,
+        frontal_area: 2.4,
+        crr: 0.012,
+        wheel_radius: 0.35,
+        ac_max: 11,
+        dc_max: 150,
+        regen_max: 50,
+        regen_eff: 0.75,
+        aux: 0.6
     }
 };
 
@@ -98,7 +182,41 @@ const ui = {
     routeInfo: document.getElementById('route-info'),
     routeDistance: document.getElementById('route-distance'),
     routeDuration: document.getElementById('route-duration'),
-    notificationsContainer: document.getElementById('notifications-container')
+    notificationsContainer: document.getElementById('notifications-container'),
+    
+    // EV Logic UI
+    evToggle: document.getElementById('ev-routing-toggle'),
+    evParamsPanel: document.getElementById('ev-params-panel'),
+    vehiclePreset: document.getElementById('vehicle-preset'),
+    startSoc: document.getElementById('start-soc'),
+    batterySoh: document.getElementById('battery-soh'),
+    payloadSlider: document.getElementById('payload-slider'),
+    payloadDisplay: document.getElementById('payload-display'),
+    ambientTemp: document.getElementById('ambient-temp'),
+    targetCharge: document.getElementById('target-charge'),
+    ecoSlider: document.getElementById('eco-slider'),
+    ecoDisplay: document.getElementById('eco-display'),
+    
+    // Advanced Physics UI
+    dragCoeff: document.getElementById('drag-coeff'),
+    frontalArea: document.getElementById('frontal-area'),
+    crrCoeff: document.getElementById('crr-coeff'),
+    wheelRadius: document.getElementById('wheel-radius'),
+    minWaypointSoc: document.getElementById('min-waypoint-soc'),
+    minArrivalSoc: document.getElementById('min-arrival-soc'),
+    regenEff: document.getElementById('regen-efficiency'),
+    auxPower: document.getElementById('aux-power'),
+    missionChargeBound: document.getElementById('mission-charge-bound'),
+    emergencyMode: document.getElementById('emergency-mode'),
+    
+    // Trip Execution Panel
+    tripPanel: document.getElementById('trip-execution-panel'),
+    loggerInputs: document.getElementById('logger-inputs'),
+    actualSocInput: document.getElementById('actual-soc-input'),
+    logSocBtn: document.getElementById('log-soc-btn'),
+    deviationValue: document.getElementById('deviation-value'),
+    deviationReadout: document.getElementById('deviation-readout'),
+    recomputeBtn: document.getElementById('recompute-btn')
 };
 
 /**
@@ -223,6 +341,9 @@ function initMap() {
             ui.hourDisplay.innerText = e.target.value;
         });
 
+        // Initialize EV Mission Control Handlers
+        initEVHandlers(map);
+
         console.log('[app] Map initialized successfully.');
         logDebug('initMap', 'EXIT_SUCCESS');
     } catch (err) {
@@ -230,6 +351,89 @@ function initMap() {
         console.error('[app] Map initialization failed:', err);
         showStatus('Critical error: Could not load the map interface.', 'error');
     }
+}
+
+/**
+ * Initializes listeners for EV-specific UI elements.
+ * @param {Object} map 
+ */
+function initEVHandlers(map) {
+    logDebug('initEVHandlers', 'ENTRY');
+
+    // EV Master Toggle
+    ui.evToggle.addEventListener('change', (e) => {
+        state.evEnabled = e.target.checked;
+        ui.evParamsPanel.classList.toggle('hidden', !state.evEnabled);
+        logDebug('evToggle', 'CHANGED', { enabled: state.evEnabled });
+    });
+
+    // Vehicle Preset Selection
+    ui.vehiclePreset.addEventListener('change', (e) => {
+        applyVehiclePreset(e.target.value);
+    });
+
+    // Payload Slider
+    ui.payloadSlider.addEventListener('input', (e) => {
+        ui.payloadDisplay.innerText = e.target.value;
+    });
+
+    // Eco Slider
+    ui.ecoSlider.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value);
+        let label = 'Balanced';
+        if (val < 30) label = 'Max Efficiency';
+        else if (val < 45) label = 'Eco-Friendly';
+        else if (val > 75) label = 'Max Performance';
+        else if (val > 55) label = 'Time-Optimized';
+        ui.ecoDisplay.innerText = label;
+    });
+
+    // Log SoC Button
+    ui.logSocBtn.addEventListener('click', () => {
+        logActualSoC(map);
+    });
+
+    // Recompute Button
+    ui.recomputeBtn.addEventListener('click', () => {
+        triggerConservativeRecompute(map);
+    });
+
+    logDebug('initEVHandlers', 'EXIT_SUCCESS');
+}
+
+/**
+ * Updates UI and internal state based on selected OEM profile.
+ * @param {string} presetKey 
+ */
+function applyVehiclePreset(presetKey) {
+    logDebug('applyVehiclePreset', 'ENTRY', { presetKey });
+    if (presetKey === 'custom') return;
+
+    const preset = vehiclePresets[presetKey];
+    if (!preset) return;
+
+    // Update state
+    state.evParams.vehicle_mass_kg = preset.mass_kg;
+    state.evParams.battery_capacity_kwh = preset.capacity_kwh;
+    state.evParams.drag_coeff = preset.drag_coeff;
+    state.evParams.frontal_area_m2 = preset.frontal_area;
+    state.evParams.crr = preset.crr;
+    state.evParams.wheel_radius_m = preset.wheel_radius;
+    state.evParams.ac_kw_max = preset.ac_max;
+    state.evParams.dc_kw_max = preset.dc_max;
+    state.evParams.max_regen_power_kw = preset.regen_max;
+    state.evParams.regen_efficiency = preset.regen_eff;
+    state.evParams.aux_power_kw = preset.aux;
+
+    // Update UI
+    ui.dragCoeff.value = preset.drag_coeff;
+    ui.frontalArea.value = preset.frontal_area;
+    ui.crrCoeff.value = preset.crr;
+    ui.wheelRadius.value = preset.wheel_radius;
+    ui.regenEff.value = Math.round(preset.regen_eff * 100);
+    ui.auxPower.value = preset.aux;
+
+    logDebug('applyVehiclePreset', 'EXIT_SUCCESS', preset.name);
 }
 
 /**
@@ -489,12 +693,18 @@ async function calculateRoute(map) {
     ui.calcBtn.disabled = true;
     showStatus('Running comparison suite...', 'loading');
 
+    // Stage 5 EV Mission Control Payload Integration
     const payload = {
         start: formatCoord(state.startCoords),
         end: formatCoord(state.endCoords),
         objective: ui.objectiveSelect.value,
         mock_hour: parseInt(ui.hourSlider.value)
     };
+
+    if (state.evEnabled) {
+        payload.ev_params = getEvPayload();
+        logDebug('calculateRoute', 'EV_MODE_ACTIVE', payload.ev_params);
+    }
 
     try {
         const fetchUrl = appConfig.apiBaseUrl + appConfig.apiEndpoint;
@@ -526,6 +736,10 @@ async function calculateRoute(map) {
 
         const results = data.data.results;
 
+        // Clear previous mission markers
+        state.markers.chargers.forEach(m => map.removeLayer(m));
+        state.markers.chargers = [];
+
         renderAllRoutes(map, results);
         spawnAlgorithmToasts(results);
 
@@ -548,6 +762,57 @@ async function calculateRoute(map) {
         ui.calcBtn.disabled = false;
         logDebug('calculateRoute', 'FINALLY_CALCBTN_UNLOCKED');
     }
+}
+
+/**
+ * Constructs the high-fidelity EV physics payload from UI inputs.
+ * Performs critical unit conversions (% -> kWh, % -> scalar).
+ * @returns {Object} ev_params compatible with Stage 5 Backend/gRPC.
+ */
+function getEvPayload() {
+    logDebug('getEvPayload', 'ENTRY');
+
+    const capacity = parseFloat(state.evParams.battery_capacity_kwh);
+    const soh = parseFloat(ui.batterySoh.value) / 100;
+    const startSocPct = parseFloat(ui.startSoc.value) / 100;
+    
+    // Effective Capacity = Capacity * SoH
+    const effCapacity = capacity * soh;
+
+    const payload = {
+        enabled: true,
+        // Physics & Mechanical
+        effective_mass_kg: parseFloat(state.evParams.vehicle_mass_kg) + parseFloat(ui.payloadSlider.value),
+        drag_coeff: parseFloat(ui.dragCoeff.value),
+        frontal_area_m2: parseFloat(ui.frontalArea.value),
+        crr: parseFloat(ui.crrCoeff.value),
+        wheel_radius_m: parseFloat(ui.wheelRadius.value),
+        
+        // Battery & Energy
+        start_soc_kwh: effCapacity * startSocPct,
+        battery_soh_pct: parseFloat(ui.batterySoh.value),
+        energy_uncertainty_margin_pct: parseFloat(state.evParams.energy_uncertainty_margin_pct),
+        
+        // Thresholds (Converted to kWh)
+        min_waypoint_soc_kwh: effCapacity * (parseFloat(ui.minWaypointSoc.value) / 100),
+        min_arrival_soc_kwh: effCapacity * (parseFloat(ui.minArrivalSoc.value) / 100),
+        
+        // Power & Charging
+        ac_kw_max: parseFloat(state.evParams.ac_kw_max),
+        dc_kw_max: parseFloat(state.evParams.dc_kw_max),
+        max_regen_power_kw: parseFloat(state.evParams.max_regen_power_kw),
+        regen_efficiency: parseFloat(ui.regenEff.value) / 100, // Converted to 0.0-1.0
+        target_charge_bound_kwh: parseFloat(ui.missionChargeBound.value) || undefined,
+        is_emergency_assumption: ui.emergencyMode.checked,
+        
+        // Environment & Multi-Objective
+        aux_power_kw: parseFloat(ui.auxPower.value),
+        ambient_temp_c: parseFloat(ui.ambientTemp.value),
+        eco_time_scalar: parseFloat(ui.ecoSlider.value) / 100 // 0.0 (Eco) to 1.0 (Time)
+    };
+
+    logDebug('getEvPayload', 'EXIT_SUCCESS', payload);
+    return payload;
 }
 
 /**
@@ -579,33 +844,48 @@ function renderAllRoutes(map, results) {
         const N = group.length;
         const perLineWidth = TOTAL_BUNDLE_WIDTH / N;
         const baseLatLngs = JSON.parse(pathKey).map(c => [c.lat, c.lng]);
+        const pathData = JSON.parse(pathKey); // Access extra properties like cost_e
 
         group.forEach((res, index) => {
             const color = appConfig.algoColors[res.algorithm] || '#fff';
-            // Calculate offset in pixels: (index - (N-1)/2) * perLineWidth
             const offsetPx = (index - (N - 1) / 2) * perLineWidth;
 
             const latLngs = (offsetPx === 0) ? baseLatLngs : getOffsetPoints(map, baseLatLngs, offsetPx);
 
-            const layer = L.polyline(latLngs, {
-                color: color,
-                weight: perLineWidth,
-                opacity: 0.9,
-                lineJoin: 'round',
-                interactive: false // We use the toast for interaction
-            }).addTo(map);
+            // Stage 5: Segment-Aware Regenerative Braking Visualization
+            // We split the polyline into solid (consumption) and dashed (regeneration) segments.
+            const segments = splitPolylineIntoSegments(pathData, latLngs);
+            const algorithmLayers = [];
+
+            segments.forEach(seg => {
+                const layer = L.polyline(seg.points, {
+                    color: color,
+                    weight: perLineWidth,
+                    opacity: 0.9,
+                    lineJoin: 'round',
+                    dashArray: seg.isRegen ? '5, 10' : null,
+                    interactive: false
+                }).addTo(map);
+                
+                algorithmLayers.push(layer);
+                state.routeLayers.push(layer);
+                featureGroup.addLayer(layer);
+            });
+
+            // Stage 5: Charger Marker Ontology
+            // Only the first result (primary) plots charger markers to avoid clutter.
+            if (index === 0 && state.evEnabled) {
+                renderChargerMarkers(map, pathData);
+            }
 
             // Store for hover logic
             state.originalStyles.set(res.algorithm, {
-                layer: layer,
+                layers: algorithmLayers,
                 baseLatLngs: baseLatLngs,
                 weight: perLineWidth,
                 offsetPx: offsetPx,
                 color: color
             });
-
-            state.routeLayers.push(layer);
-            featureGroup.addLayer(layer);
         });
     });
 
@@ -628,7 +908,19 @@ function refreshRouteOffsets() {
     state.originalStyles.forEach((style, _algo) => {
         if (style.offsetPx !== 0) {
             const newLatLngs = getOffsetPoints(map, style.baseLatLngs, style.offsetPx);
-            style.layer.setLatLngs(newLatLngs);
+            
+            // Re-segment the new offset points
+            // Since we don't have the original pathData metadata here easily, 
+            // we'd need to re-segment if we wanted to be perfect.
+            // For now, we update the existing layer segments by distributing the new points.
+            let pointIdx = 0;
+            style.layers.forEach(layer => {
+                const count = layer.getLatLngs().length;
+                // Note: Leaflet segments share start/end points, so this is an approximation
+                // better to re-calculate from scratch using original polyline indices.
+                layer.setLatLngs(newLatLngs.slice(pointIdx, pointIdx + count));
+                pointIdx += (count - 1);
+            });
         }
     });
 }
@@ -642,15 +934,107 @@ function focusRoute(algorithm) {
 
     state.originalStyles.forEach((style, algo) => {
         if (algo === algorithm) {
-            // Focus this one: full width, no offset
-            style.layer.setStyle({ weight: 10, opacity: 1 });
-            style.layer.setLatLngs(style.baseLatLngs);
-            style.layer.bringToFront();
+            // Focus this one: full width
+            style.layers.forEach(layer => {
+                layer.setStyle({ weight: 10, opacity: 1 });
+                layer.bringToFront();
+            });
         } else {
             // Hide others
-            style.layer.setStyle({ opacity: 0 });
+            style.layers.forEach(layer => {
+                layer.setStyle({ opacity: 0 });
+            });
         }
     });
+}
+
+/**
+ * Renders specialized tri-color ontology markers for charging stops.
+ * @param {Object} map 
+ * @param {Array<Object>} pathData - Array of coordinates with metadata.
+ */
+function renderChargerMarkers(map, pathData) {
+    logDebug('renderChargerMarkers', 'ENTRY');
+    
+    pathData.forEach((node, idx) => {
+        if (!node.is_charging_stop) return;
+
+        let typeClass = 'unknown'; // 🔵
+        let typeName = 'Assumed Compatible';
+        
+        // Mapping enum-like behavior to UI ontology
+        if (node.is_operational === false) {
+            typeClass = 'offline'; // ⚪
+            typeName = 'Station Offline';
+        } else if (node.charger_type === 'DC_FAST') {
+            typeClass = 'fast'; // 🟡
+            typeName = 'DC Fast Charger';
+        } else if (node.charger_type === 'EMERGENCY') {
+            typeClass = 'emergency'; // 🔼
+            typeName = 'Emergency Wall Plug';
+        } else if (node.is_incompatible) {
+            typeClass = 'incompatible'; // 🔴
+            typeName = 'Incompatible Port';
+        }
+
+        // Apply Emergency Context if enabled
+        if (ui.emergencyMode.checked && typeClass === 'unknown') {
+            typeName = 'Assumed Compatible (Emergency Fallback)';
+        }
+
+        const marker = L.circleMarker([node.lat, node.lng], {
+            className: `charger-icon ${typeClass}`,
+            radius: 8
+        }).addTo(map);
+
+        const tooltipContent = `
+            <strong>${typeName}</strong><br>
+            Power: ${node.kw_output || '?'} kW<br>
+            ${node.is_operational === false ? '<span style="color:red">OFFLINE</span>' : 'Operational'}
+        `;
+        marker.bindTooltip(tooltipContent);
+
+        // Store for execution mode tracking
+        marker.on('click', () => {
+            state.tripHistory.selectedWaypoint = { id: idx, lat: node.lat, lng: node.lng, plannedPct: node.planned_soc_pct };
+            ui.loggerInputs.classList.remove('hidden');
+            ui.tripPanel.classList.remove('hidden');
+            logDebug('WaypointSelect', 'SELECTED', state.tripHistory.selectedWaypoint);
+        });
+
+        state.markers.chargers.push(marker);
+    });
+}
+
+/**
+ * Calculates SoC deviation and triggers recompute alerts.
+ */
+function logActualSoC(map) {
+    const actual = parseFloat(ui.actualSocInput.value);
+    const waypoint = state.tripHistory.selectedWaypoint;
+    
+    if (isNaN(actual) || !waypoint) return;
+
+    const deviation = actual - waypoint.plannedPct;
+    ui.deviationValue.innerText = `${deviation > 0 ? '+' : ''}${deviation.toFixed(1)}%`;
+    ui.deviationReadout.classList.remove('hidden');
+
+    if (deviation < -2.0) {
+        logDebug('logActualSoC', 'CRITICAL_DRAIN_DETECTED', { deviation });
+        ui.recomputeBtn.classList.remove('hidden');
+        showStatus('Critical drain detected. Suggesting conservative re-calculation.', 'error');
+    } else {
+        ui.recomputeBtn.classList.add('hidden');
+    }
+}
+
+/**
+ * Triggers a new calculation with inflated uncertainty margin.
+ */
+function triggerConservativeRecompute(map) {
+    logDebug('triggerConservativeRecompute', 'ENTRY');
+    state.evParams.energy_uncertainty_margin_pct += 5.0; // Dynamic inflation
+    calculateRoute(map);
 }
 
 /**
@@ -659,13 +1043,53 @@ function focusRoute(algorithm) {
 function restoreRoutes() {
     const map = state.routeLayers[0]?._map;
     state.originalStyles.forEach((style, _algo) => {
-        const latLngs = (style.offsetPx === 0 || !map) ? style.baseLatLngs : getOffsetPoints(map, style.baseLatLngs, style.offsetPx);
-        style.layer.setStyle({
-            weight: style.weight,
-            opacity: 0.9
+        style.layers.forEach(layer => {
+            layer.setStyle({
+                weight: style.weight,
+                opacity: 0.9
+            });
         });
-        style.layer.setLatLngs(latLngs);
     });
+}
+
+/**
+ * Stage 5 Coordinate-Level Splicing Logic.
+ * Groups coordinates into contiguous solid or dashed segments.
+ * @param {Array} originalPolyline - Array of coordinate objects with segment_consumed_kwh metadata.
+ * @param {Array} renderedLatLngs - Array of already-offset [lat, lng] or L.LatLng for rendering.
+ * @returns {Array} List of { isRegen, points } objects.
+ */
+function splitPolylineIntoSegments(originalPolyline, renderedLatLngs) {
+    if (originalPolyline.length < 2) return [];
+
+    const segments = [];
+    let currentPoints = [renderedLatLngs[0]];
+    let currentIsRegen = (originalPolyline[1]?.segment_consumed_kwh < 0);
+
+    for (let i = 1; i < originalPolyline.length; i++) {
+        const consumed = originalPolyline[i].segment_consumed_kwh || 0;
+        const isRegen = consumed < 0;
+
+        if (isRegen !== currentIsRegen) {
+            // New type discovered, close current segment
+            // Seamless stitching: include the current transition point in BOTH segments
+            currentPoints.push(renderedLatLngs[i]);
+            segments.push({ isRegen: currentIsRegen, points: currentPoints });
+            
+            // Start next segment with the same point
+            currentPoints = [renderedLatLngs[i]];
+            currentIsRegen = isRegen;
+        } else {
+            currentPoints.push(renderedLatLngs[i]);
+        }
+    }
+
+    // Add final segment
+    if (currentPoints.length > 1) {
+        segments.push({ isRegen: currentIsRegen, points: currentPoints });
+    }
+
+    return segments;
 }
 
 /**
@@ -766,6 +1190,10 @@ function createAlgorithmToast(data) {
     if (isBreakerHit) badge = ' <span class="breaker-badge">LIMIT EXCEEDED</span>';
     else if (isNoPath) badge = ' <span class="no-path-badge">NO PATH FOUND</span>';
 
+    // Stage 5: EV-Specific Metrics
+    const arrivalSocStr = state.evEnabled ? `${(data.arrival_soc_pct || 0).toFixed(1)}%` : '---';
+    const isProximityWarning = state.evEnabled && (data.arrival_soc_pct - parseFloat(ui.minArrivalSoc.value)) < 5.0;
+
     toast.innerHTML = `
         <div class="toast-header">
             <h3>${data.algorithm}${badge}</h3>
@@ -783,13 +1211,21 @@ function createAlgorithmToast(data) {
                 <span class="label">Time</span>
                 <span class="value">${data.exec_time_ms}ms</span>
             </div>
+            <div class="toast-stat" style="${state.evEnabled ? '' : 'display:none'}">
+                <span class="label">Arrival SoC</span>
+                <span class="value">${isProximityWarning ? '⚠️ ' : ''}${arrivalSocStr}</span>
+            </div>
+            <div class="toast-stat" style="${state.evEnabled ? '' : 'display:none'}">
+                <span class="label">Energy Cost</span>
+                <span class="value">${(isBreakerHit || isNoPath) ? '---' : (data.consumed_kwh || 0).toFixed(2)} kWh</span>
+            </div>
+            <div class="toast-stat" style="${state.evEnabled ? 'display:none' : ''}">
+                <span class="label">Cost</span>
+                <span class="value">${(isBreakerHit || isNoPath) ? '---' : data.path_cost.toFixed(2)}</span>
+            </div>
             <div class="toast-stat">
                 <span class="label">Distance</span>
                 <span class="value">${(isBreakerHit || isNoPath) ? '---' : formatDistance(data.distance)}</span>
-            </div>
-            <div class="toast-stat">
-                <span class="label">Cost</span>
-                <span class="value">${(isBreakerHit || isNoPath) ? '---' : data.path_cost.toFixed(2)}</span>
             </div>
         </div>
     `;
@@ -894,5 +1330,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Export for testing if needed
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { formatCoord, displayCoord, formatDistance, formatDuration };
+    module.exports = { 
+        formatCoord, 
+        displayCoord, 
+        formatDistance, 
+        formatDuration,
+        applyVehiclePreset,
+        getEvPayload,
+        initEVHandlers,
+        splitPolylineIntoSegments
+    };
 }

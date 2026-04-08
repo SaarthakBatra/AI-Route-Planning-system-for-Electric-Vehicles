@@ -90,11 +90,15 @@ The v1.3.0 update introduces **Dynamic API Discovery** to support hybrid develop
 
 ## 5. 🏗️ Features
 
-- **Glassmorphic UI**: High-fidelity control panels and notifications with backdrop filters.
-- **Pixel-Perfect Bundling**: Visualizes overlapping routes as distinct stacked paths.
-- **Interaction Hover**: Hovering a performance card highlights the specific path on the map.
+- **Stage 5 EV Mission Control**: Physics-based configuration for Payload, Battery Health (SoH), and SoC thresholds.
+- **Glassmorphic UI**: High-fidelity control panels and reactive performance telemetry toasts with backdrop filters.
+- **Pareto-Optimal Visualization**: Renders complex multi-objective paths with arrival SoC and energy cost data.
+- **Charger Transparency Ontology**: Shape-distinct markers for fast chargers, unknown ports, and offline status.
+- **Plan vs Reality Tracking**: Real-time SoC deviation alerts with automated "Conservative Recompute" triggers.
+- **Regenerative Braking Rendering**: Visualizes energy recovery segments as dashed polyline traces.
+- **Pixel-Perfect Bundling**: Stacked polyline rendering for overlapping multi-algorithm paths.
 - **Smart Search**: Autocomplete suggestions via Nominatim with intelligent debouncing.
-- **Circuit Breaker Visualization**: Intelligent UI feedback (badges and failure styling) for search limit exceeded states.
+- **Circuit Breaker Visualization**: UI feedback (badges and failure styling) for search limit exceeded states.
 - **Multi-Theme Support**: Toggle between Dark, Light, and Satellite imagery on the fly.
 
 ## 6. 🛠️ Tech Stack
